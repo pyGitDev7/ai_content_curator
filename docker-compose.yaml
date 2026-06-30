@@ -1,0 +1,41 @@
+version: "3.9"
+
+services:
+  bot:
+    build: .
+    container_name: ai-curator-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - bot-data:/app/data
+      - ./.env:/app/.env:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
+  # Optional: PostgreSQL for production
+  # db:
+  #   image: postgres:16-alpine
+  #   container_name: curator-db
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_DB: curator_db
+  #     POSTGRES_USER: curator
+  #     POSTGRES_PASSWORD: your_secure_password
+  #   volumes:
+  #     - pg-data:/var/lib/postgresql/data
+  #   ports:
+  #     - "5432:5432"
+
+volumes:
+  bot-data:
+  # pg-data:
