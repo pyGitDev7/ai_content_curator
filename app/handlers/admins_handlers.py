@@ -14,65 +14,60 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import async_session_factory
 from app.models.models import User
-from app.handlers.admin_panel import is_authorized
+from app.handlers.admin_panel import _is_authorized, safe_edit
 
 router = Router(name="admins")
 
 
 class AddAdminStates(StatesGroup):
-    waiting_for_id = State()
+    waiting_for_telegram_id = State()
 
 
-@router.callback_query(F.data == "adm_menu:show")
+@router.callback_query(F.data == "menu:admins")
 async def cb_admins_menu(callback: CallbackQuery) -> None:
-    if not callback.from_user or not await is_authorized(callback.from_user.id):
+    if not callback.from_user or not await _is_authorized(callback.from_user.id):
         await callback.answer("⛔", show_alert=True)
         return
 
     async with async_session_factory() as session:
         result = await session.execute(select(User).order_by(User.id))
-        admins = list(result.scalars().all())
+        admins = result.scalars().all()
+
+    await callback.answer()
 
     if not admins:
         text = "👥 هیچ مدیری ثبت نشده است."
     else:
-        lines = ["👥 لیست مدیران:\n"]
-        for a in admins:
-            badge = " 👑 سوپرادمین" if a.is_super_admin else ""
-            uname = f"@{a.username}" if a.username else "—"
-            lines.append(f"  • {uname}{badge} | ID: {a.telegram_id}")
+        lines = ["👥 *لیست مدیران:*\n"]
+        for admin in admins:
+            badge = " 👑" if admin.is_super_admin else ""
+            uname = f"@{admin.username}" if admin.username else "—"
+            lines.append(f"  • {uname}{badge} | `{admin.telegram_id}`")
         text = "\n".join(lines)
 
-    is_super = callback.from_user and callback.from_user.id == settings.super_admin_id
+    is_super = callback.from_user.id == settings.super_admin_id
     buttons: list[list[InlineKeyboardButton]] = []
-
     if is_super:
-        buttons.append([InlineKeyboardButton(text="➕ افزودن مدیر", callback_data="admadd:start")])
-        buttons.append([InlineKeyboardButton(text="🗑️ حذف مدیر", callback_data="admdel:list")])
-    buttons.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="back:main")])
+        buttons.append([InlineKeyboardButton(text="➕ افزودن مدیر", callback_data="adm:add")])
+        buttons.append([InlineKeyboardButton(text="🗑️ حذف مدیر", callback_data="adm:del_prompt")])
+    buttons.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu:main")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await callback.message.edit_text(text, reply_markup=kb)
-    await callback.answer()
+    await safe_edit(callback.message, text, kb)
 
 
-# ──────────── Add Admin ────────────
-
-@router.callback_query(F.data == "admadd:start")
+@router.callback_query(F.data == "adm:add")
 async def cb_add_admin(callback: CallbackQuery, state: FSMContext) -> None:
     if not callback.from_user or callback.from_user.id != settings.super_admin_id:
         await callback.answer("⛔ فقط سوپرادمین", show_alert=True)
         return
 
-    await callback.message.edit_text(
-        "➕ آیدی عددی تلگرام مدیر جدید را وارد کنید:\n\n"
-        "مثال: 987654321"
-    )
-    await state.set_state(AddAdminStates.waiting_for_id)
     await callback.answer()
+    await safe_edit(callback.message, "➕ آیدی عددی مدیر جدید:\n\nمثال: `987654321`")
+    await state.set_state(AddAdminStates.waiting_for_telegram_id)
 
 
-@router.message(AddAdminStates.waiting_for_id)
+@router.message(AddAdminStates.waiting_for_telegram_id)
 async def add_admin_input(message: Message, state: FSMContext) -> None:
     if not message.from_user or message.from_user.id != settings.super_admin_id:
         return
@@ -86,22 +81,18 @@ async def add_admin_input(message: Message, state: FSMContext) -> None:
     async with async_session_factory() as session:
         existing = await session.execute(select(User).where(User.telegram_id == tid))
         if existing.scalar_one_or_none():
-            await message.answer("⚠️ این کاربر قبلاً مدیر است.")
+            await message.answer("⚠️ قبلاً مدیر است.")
             await state.clear()
             return
-
-        admin = User(telegram_id=tid, is_super_admin=False)
-        session.add(admin)
+        session.add(User(telegram_id=tid, is_super_admin=False))
         await session.commit()
 
     await state.clear()
-    await message.answer(f"✅ مدیر جدید با آیدی {tid} اضافه شد.")
+    await message.answer(f"✅ مدیر جدید: `{tid}`", parse_mode="Markdown")
 
 
-# ──────────── Delete Admin ────────────
-
-@router.callback_query(F.data == "admdel:list")
-async def cb_del_admin_list(callback: CallbackQuery) -> None:
+@router.callback_query(F.data == "adm:del_prompt")
+async def cb_del_admin_prompt(callback: CallbackQuery) -> None:
     if not callback.from_user or callback.from_user.id != settings.super_admin_id:
         await callback.answer("⛔", show_alert=True)
         return
@@ -110,45 +101,45 @@ async def cb_del_admin_list(callback: CallbackQuery) -> None:
         result = await session.execute(
             select(User).where(User.is_super_admin == False).order_by(User.id)
         )
-        admins = list(result.scalars().all())
+        admins = result.scalars().all()
+
+    await callback.answer()
 
     if not admins:
-        await callback.answer("❌ مدیر دیگری وجود ندارد", show_alert=True)
+        await safe_edit(callback.message, "❌ مدیر دیگری وجود ندارد.")
         return
 
     buttons = [
-        [InlineKeyboardButton(
-            text=f"🗑️ {a.username or a.telegram_id}",
-            callback_data=f"admdel:{a.id}",
-        )]
+        [InlineKeyboardButton(text=f"🗑️ {a.username or a.telegram_id}", callback_data=f"adm:del:{a.id}")]
         for a in admins
     ]
-    buttons.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_menu:show")])
+    buttons.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu:admins")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-
-    await callback.message.edit_text("🗑️ مدیر موردنظر برای حذف:", reply_markup=kb)
-    await callback.answer()
+    await safe_edit(callback.message, "🗑️ مدیر موردنظر:", kb)
 
 
-@router.callback_query(F.data.startswith("admdel:"))
+@router.callback_query(F.data.startswith("adm:del:"))
 async def cb_del_admin(callback: CallbackQuery) -> None:
     if not callback.from_user or callback.from_user.id != settings.super_admin_id:
         await callback.answer("⛔", show_alert=True)
         return
 
-    admin_id = int(callback.data.split(":")[1])
+    parts = (callback.data or "").split(":")
+    admin_db_id = int(parts[2]) if len(parts) >= 3 else 0
 
     async with async_session_factory() as session:
-        result = await session.execute(select(User).where(User.id == admin_id))
+        result = await session.execute(select(User).where(User.id == admin_db_id))
         admin = result.scalar_one_or_none()
         if not admin:
             await callback.answer("❌ یافت نشد", show_alert=True)
             return
         if admin.is_super_admin:
-            await callback.answer("⛔ نمی‌توانید سوپرادمین را حذف کنید", show_alert=True)
+            await callback.answer("⛔ سوپرادمین قابل حذف نیست", show_alert=True)
             return
         await session.delete(admin)
         await session.commit()
 
     await callback.answer("✅ مدیر حذف شد")
+
+    callback.data = "menu:admins"
     await cb_admins_menu(callback)
