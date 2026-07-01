@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from datetime import datetime, timezone
 
 from aiogram import Router, F
 from aiogram.types import (
@@ -17,13 +19,12 @@ from sqlalchemy import select, update
 from app.config import settings
 from app.database import async_session_factory
 from app.models.models import Source, AdminLog
-from app.handlers.admin_panel import _is_authorized
+from app.handlers.admin_panel import is_authorized
 
 router = Router(name="sources")
 
 
-# ──────────────────── FSM States ────────────────────
-
+# ──────────── FSM States ────────────
 
 class AddSourceStates(StatesGroup):
     waiting_for_type = State()
@@ -31,247 +32,7 @@ class AddSourceStates(StatesGroup):
     waiting_for_config = State()
 
 
-# ──────────────────── List Sources ────────────────────
-
-
-@router.callback_query(F.data.startswith("src:list"))
-async def cb_list_sources(callback: CallbackQuery) -> None:
-    if not callback.from_user or not await _is_authorized(callback.from_user.id):
-        await callback.answer("⛔", show_alert=True)
-        return
-
-    page = 0
-    parts = (callback.data or "").split(":")
-    if len(parts) >= 3:
-        try:
-            page = int(parts[2])
-        except ValueError:
-            pass
-
-    per_page = 8
-    offset = page * per_page
-
-    async with async_session_factory() as session:
-        result = await session.execute(
-            select(Source).order_by(Source.id).offset(offset).limit(per_page)
-        )
-        sources = result.scalars().all()
-
-        total_result = await session.execute(select(Source))
-        all_sources = total_result.scalars().all()
-        total = len(all_sources)
-
-    if not sources:
-        text = "📋 هیچ منبعی ثبت نشده است."
-        buttons = [[InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu:sources")]]
-    else:
-        lines: list[str] = ["📋 *لیست منابع:*\n"]
-        for src in sources:
-            status = "🟢" if src.is_active else "🔴"
-            type_emoji = {
-                "rss": "📰", "telegram": "✈️", "twitter": "🐦",
-                "reddit": "🟠", "website": "🌐", "github": "🐙",
-                "hackernews": "🔶", "arxiv": "📄",
-            }.get(src.type, "📁")
-            lines.append(
-                f"{status} *ID {src.id}* | {type_emoji} {src.type}\n"
-                f"   📝 {src.name}\n"
-                f"   {'✅ فعال' if src.is_active else '❌ غیرفعال'}"
-            )
-
-        buttons: list[list[InlineKeyboardButton]] = []
-
-        # Toggle buttons for each source
-        for src in sources:
-            toggle_text = "🔴 غیرفعال" if src.is_active else "🟢 فعال"
-            buttons.append([
-                InlineKeyboardButton(
-                    text=f"{src.name[:25]}",
-                    callback_data=f"src:detail:{src.id}",
-                ),
-                InlineKeyboardButton(
-                    text=toggle_text,
-                    callback_data=f"src:toggle:{src.id}",
-                ),
-                InlineKeyboardButton(
-                    text="🔄",
-                    callback_data=f"src:crawl:{src.id}",
-                ),
-            ])
-
-        # Pagination
-        nav_row: list[InlineKeyboardButton] = []
-        if page > 0:
-            nav_row.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"src:list:{page - 1}"))
-        if offset + per_page < total:
-            nav_row.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"src:list:{page + 1}"))
-        if nav_row:
-            buttons.append(nav_row)
-
-        buttons.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu:sources")])
-        text = "\n".join(lines)
-
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-    await callback.answer()
-
-
-# ──────────────────── Source Detail ────────────────────
-
-
-@router.callback_query(F.data.startswith("src:detail:"))
-async def cb_source_detail(callback: CallbackQuery) -> None:
-    if not callback.from_user or not await _is_authorized(callback.from_user.id):
-        await callback.answer("⛔", show_alert=True)
-        return
-
-    src_id = int((callback.data or "").split(":")[2])
-
-    async with async_session_factory() as session:
-        result = await session.execute(select(Source).where(Source.id == src_id))
-        src = result.scalar_one_or_none()
-
-    if not src:
-        await callback.answer("❌ منبع یافت نشد", show_alert=True)
-        return
-
-    config = json.loads(src.config_json) if src.config_json else {}
-    config_str = "\n".join(f"  🔹 {k}: {v}" for k, v in config.items())
-    last_fetch = src.last_fetch_at.strftime("%Y-%m-%d %H:%M") if src.last_fetch_at else "هرگز"
-
-    text = (
-        f"📡 *جزئیات منبع*\n\n"
-        f"🆔 شناسه: `{src.id}`\n"
-        f"📝 نام: {src.name}\n"
-        f"📁 نوع: {src.type}\n"
-        f"{'✅ فعال' if src.is_active else '❌ غیرفعال'}\n"
-        f"🕐 آخرین کراول: {last_fetch}\n\n"
-        f"⚙️ *تنظیمات:*\n{config_str}"
-    )
-
-    buttons = [
-        [
-            InlineKeyboardButton(
-                text="🔴 غیرفعال" if src.is_active else "🟢 فعال",
-                callback_data=f"src:toggle:{src.id}",
-            ),
-            InlineKeyboardButton(text="🔄 کراول", callback_data=f"src:crawl:{src.id}"),
-        ],
-        [InlineKeyboardButton(text="🗑️ حذف", callback_data=f"src:delete:{src.id}")],
-        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="src:list:0")],
-    ]
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-    await callback.answer()
-
-
-# ──────────────────── Toggle Source ────────────────────
-
-
-@router.callback_query(F.data.startswith("src:toggle:"))
-async def cb_toggle_source(callback: CallbackQuery) -> None:
-    if not callback.from_user or not await _is_authorized(callback.from_user.id):
-        await callback.answer("⛔", show_alert=True)
-        return
-
-    src_id = int((callback.data or "").split(":")[2])
-
-    async with async_session_factory() as session:
-        result = await session.execute(select(Source).where(Source.id == src_id))
-        src = result.scalar_one_or_none()
-        if not src:
-            await callback.answer("❌ منبع یافت نشد", show_alert=True)
-            return
-
-        src.is_active = not src.is_active
-        await session.commit()
-
-        await _log_admin(session, callback.from_user.id, "toggle_source",
-                         f"Toggled source {src.name} ({src.id}) to {'active' if src.is_active else 'inactive'}")
-
-    status = "فعال ✅" if src.is_active else "غیرفعال ❌"
-    await callback.answer(f"منبع {src.name} اکنون {status}")
-
-    # Refresh list
-    await cb_list_sources(callback)
-
-
-# ──────────────────── Delete Source ────────────────────
-
-
-@router.callback_query(F.data == "src:del_prompt")
-async def cb_delete_prompt(callback: CallbackQuery) -> None:
-    if not callback.from_user or not await _is_authorized(callback.from_user.id):
-        await callback.answer("⛔", show_alert=True)
-        return
-
-    text = "🗑️ برای حذف یک منبع، شناسه (ID) آن را ارسال کنید:\n\nمثال: `/del_source 5`"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu:sources")]
-    ])
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-    await callback.answer()
-
-
-@router.message(F.text.startswith("/del_source"))
-async def cmd_del_source(message: Message) -> None:
-    if not message.from_user or not await _is_authorized(message.from_user.id):
-        return
-
-    parts = (message.text or "").split()
-    if len(parts) < 2:
-        await message.answer("❌ لطفاً شناسه منبع را وارد کنید. مثال: `/del_source 5`", parse_mode="Markdown")
-        return
-
-    try:
-        src_id = int(parts[1])
-    except ValueError:
-        await message.answer("❌ شناسه باید عدد باشد.")
-        return
-
-    async with async_session_factory() as session:
-        result = await session.execute(select(Source).where(Source.id == src_id))
-        src = result.scalar_one_or_none()
-        if not src:
-            await message.answer(f"❌ منبع با شناسه {src_id} یافت نشد.")
-            return
-
-        name = src.name
-        await session.delete(src)
-        await session.commit()
-
-        await _log_admin(session, message.from_user.id, "delete_source", f"Deleted source: {name} ({src_id})")
-
-    await message.answer(f"✅ منبع «{name}» با موفقیت حذف شد.")
-
-
-@router.callback_query(F.data.startswith("src:delete:"))
-async def cb_delete_source(callback: CallbackQuery) -> None:
-    if not callback.from_user or not await _is_authorized(callback.from_user.id):
-        await callback.answer("⛔", show_alert=True)
-        return
-
-    src_id = int((callback.data or "").split(":")[2])
-
-    async with async_session_factory() as session:
-        result = await session.execute(select(Source).where(Source.id == src_id))
-        src = result.scalar_one_or_none()
-        if not src:
-            await callback.answer("❌ یافت نشد", show_alert=True)
-            return
-
-        name = src.name
-        await session.delete(src)
-        await session.commit()
-
-        await _log_admin(session, callback.from_user.id, "delete_source", f"Deleted source: {name} ({src_id})")
-
-    await callback.answer(f"✅ {name} حذف شد")
-    await cb_list_sources(callback)
-
-
-# ──────────────────── Add Source (FSM) ────────────────────
-
+# ──────────── Helpers ─────────────────
 
 SOURCE_TYPES = {
     "rss": "📰 RSS/Atom",
@@ -295,42 +56,214 @@ SOURCE_CONFIG_HINTS = {
     "arxiv": '{"query": "cat:cs.AI", "max_results": 20, "keywords": "LLM,GPT"}',
 }
 
+TYPE_EMOJI = {
+    "rss": "📰", "telegram": "✈️", "twitter": "🐦",
+    "reddit": "🟠", "website": "🌐", "github": "🐙",
+    "hackernews": "🔶", "arxiv": "📄",
+}
 
-@router.callback_query(F.data == "src:add")
-async def cb_add_source_start(callback: CallbackQuery, state: FSMContext) -> None:
-    if not callback.from_user or not await _is_authorized(callback.from_user.id):
+
+async def _log_admin(admin_id: int, action_type: str, description: str) -> None:
+    async with async_session_factory() as session:
+        log = AdminLog(admin_id=admin_id, action_type=action_type, description=description)
+        session.add(log)
+        await session.commit()
+
+
+# ──────────── Sources Menu ────────────
+
+@router.callback_query(F.data == "src_menu:show")
+async def cb_sources_menu(callback: CallbackQuery) -> None:
+    if not callback.from_user or not await is_authorized(callback.from_user.id):
         await callback.answer("⛔", show_alert=True)
         return
 
     buttons = [
-        [InlineKeyboardButton(text=label, callback_data=f"src:type:{key}")]
-        for key, label in SOURCE_TYPES.items()
+        [InlineKeyboardButton(text="📋 لیست منابع", callback_data="srcpg:0")],
+        [InlineKeyboardButton(text="➕ افزودن منبع جدید", callback_data="srcadd:start")],
+        [InlineKeyboardButton(text="🔄 کراول دستی (همه)", callback_data="srccrawl:all")],
+        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="back:main")],
     ]
-    buttons.append([InlineKeyboardButton(text="🔙 انصراف", callback_data="menu:sources")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-
     await callback.message.edit_text(
-        "➕ *افزودن منبع جدید*\n\nنوع منبع را انتخاب کنید:",
+        "📡 مدیریت منابع\n\nاز گزینه‌های زیر استفاده کنید:",
         reply_markup=kb,
-        parse_mode="Markdown",
     )
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("src:type:"))
-async def cb_add_source_type(callback: CallbackQuery, state: FSMContext) -> None:
-    if not callback.from_user or not await _is_authorized(callback.from_user.id):
+# ──────────── List Sources (Paginated) ────────────
+
+@router.callback_query(F.data.startswith("srcpg:"))
+async def cb_list_sources(callback: CallbackQuery) -> None:
+    if not callback.from_user or not await is_authorized(callback.from_user.id):
         await callback.answer("⛔", show_alert=True)
         return
 
-    src_type = (callback.data or "").split(":")[2]
-    await state.update_data(src_type=src_type)
+    parts = callback.data.split(":")
+    page = int(parts[1]) if len(parts) > 1 else 0
 
-    hint = SOURCE_CONFIG_HINTS.get(src_type, "{}")
+    per_page = 5
+    offset = page * per_page
+
+    async with async_session_factory() as session:
+        all_res = await session.execute(select(Source).order_by(Source.id))
+        all_sources = list(all_res.scalars().all())
+        total = len(all_sources)
+
+        page_sources = all_sources[offset : offset + per_page]
+
+    if not page_sources:
+        text = "📋 منبعی ثبت نشده است." if total == 0 else "📋 منبعی در این صفحه نیست."
+        buttons = [[InlineKeyboardButton(text="🔙 بازگشت", callback_data="src_menu:show")]]
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await callback.message.edit_text(text, reply_markup=kb)
+        await callback.answer()
+        return
+
+    lines = ["📋 لیست منابع:\n"]
+    buttons: list[list[InlineKeyboardButton]] = []
+
+    for src in page_sources:
+        status = "🟢" if src.is_active else "🔴"
+        emoji = TYPE_EMOJI.get(src.type, "📁")
+        lines.append(f"{status} ID:{src.id} | {emoji} {src.type} | {src.name}")
+
+        toggle_label = "🔴 غیرفعال" if src.is_active else "🟢 فعال"
+        buttons.append([
+            InlineKeyboardButton(
+                text=toggle_label,
+                callback_data=f"srctoggle:{src.id}:{page}",
+            ),
+            InlineKeyboardButton(
+                text="🔄 کراول",
+                callback_data=f"srccrawl:{src.id}",
+            ),
+            InlineKeyboardButton(
+                text="🗑️ حذف",
+                callback_data=f"srcdel:{src.id}:{page}",
+            ),
+        ])
+
+    # Pagination buttons
+    nav_row: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav_row.append(
+            InlineKeyboardButton(text="◀️ قبلی", callback_data=f"srcpg:{page - 1}")
+        )
+    if offset + per_page < total:
+        nav_row.append(
+            InlineKeyboardButton(text="بعدی ▶️", callback_data=f"srcpg:{page + 1}")
+        )
+    if nav_row:
+        buttons.append(nav_row)
+
+    buttons.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="src_menu:show")])
+
+    text = "\n".join(lines)
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await callback.message.edit_text(text, reply_markup=kb)
+    await callback.answer()
+
+
+# ──────────── Toggle Source ────────────
+
+@router.callback_query(F.data.startswith("srctoggle:"))
+async def cb_toggle_source(callback: CallbackQuery) -> None:
+    if not callback.from_user or not await is_authorized(callback.from_user.id):
+        await callback.answer("⛔", show_alert=True)
+        return
+
+    parts = callback.data.split(":")
+    src_id = int(parts[1])
+    page = int(parts[2]) if len(parts) > 2 else 0
+
+    async with async_session_factory() as session:
+        result = await session.execute(select(Source).where(Source.id == src_id))
+        src = result.scalar_one_or_none()
+        if not src:
+            await callback.answer("❌ منبع یافت نشد", show_alert=True)
+            return
+
+        src.is_active = not src.is_active
+        new_status = "فعال" if src.is_active else "غیرفعال"
+        src_name = src.name
+        await session.commit()
+
+    await _log_admin(callback.from_user.id, "toggle_source", f"{src_name} -> {new_status}")
+    await callback.answer(f"✅ {src_name}: {new_status}")
+
+    # Rebuild the list page
+    fake_data = f"srcpg:{page}"
+    callback.data = fake_data
+    await cb_list_sources(callback)
+
+
+# ──────────── Delete Source ────────────
+
+@router.callback_query(F.data.startswith("srcdel:"))
+async def cb_delete_source(callback: CallbackQuery) -> None:
+    if not callback.from_user or not await is_authorized(callback.from_user.id):
+        await callback.answer("⛔", show_alert=True)
+        return
+
+    parts = callback.data.split(":")
+    src_id = int(parts[1])
+    page = int(parts[2]) if len(parts) > 2 else 0
+
+    async with async_session_factory() as session:
+        result = await session.execute(select(Source).where(Source.id == src_id))
+        src = result.scalar_one_or_none()
+        if not src:
+            await callback.answer("❌ یافت نشد", show_alert=True)
+            return
+        src_name = src.name
+        await session.delete(src)
+        await session.commit()
+
+    await _log_admin(callback.from_user.id, "delete_source", f"Deleted: {src_name} ({src_id})")
+    await callback.answer(f"🗑️ {src_name} حذف شد")
+
+    # Rebuild the list page
+    fake_data = f"srcpg:{page}"
+    callback.data = fake_data
+    await cb_list_sources(callback)
+
+
+# ──────────── Add Source (FSM) ────────────
+
+@router.callback_query(F.data == "srcadd:start")
+async def cb_add_source_start(callback: CallbackQuery, state: FSMContext) -> None:
+    if not callback.from_user or not await is_authorized(callback.from_user.id):
+        await callback.answer("⛔", show_alert=True)
+        return
+
+    buttons = [
+        [InlineKeyboardButton(text=label, callback_data=f"srctype:{key}")]
+        for key, label in SOURCE_TYPES.items()
+    ]
+    buttons.append([InlineKeyboardButton(text="🔙 انصراف", callback_data="src_menu:show")])
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     await callback.message.edit_text(
-        f"📝 نام منبع را وارد کنید\n\n"
-        f"مثال: «وبلاگ OpenAI» یا «کانال AI فارسی»",
+        "➕ افزودن منبع جدید\n\nنوع منبع را انتخاب کنید:",
+        reply_markup=kb,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("srctype:"))
+async def cb_add_source_type(callback: CallbackQuery, state: FSMContext) -> None:
+    if not callback.from_user or not await is_authorized(callback.from_user.id):
+        await callback.answer("⛔", show_alert=True)
+        return
+
+    src_type = callback.data.split(":")[1]
+    await state.update_data(src_type=src_type)
+
+    await callback.message.edit_text(
+        "📝 نام منبع را وارد کنید\n\n"
+        "مثال: وبلاگ OpenAI"
     )
     await state.set_state(AddSourceStates.waiting_for_name)
     await callback.answer()
@@ -338,7 +271,7 @@ async def cb_add_source_type(callback: CallbackQuery, state: FSMContext) -> None
 
 @router.message(AddSourceStates.waiting_for_name)
 async def add_source_name(message: Message, state: FSMContext) -> None:
-    if not message.from_user or not await _is_authorized(message.from_user.id):
+    if not message.from_user or not await is_authorized(message.from_user.id):
         return
 
     name = (message.text or "").strip()
@@ -353,22 +286,20 @@ async def add_source_name(message: Message, state: FSMContext) -> None:
 
     await message.answer(
         f"⚙️ تنظیمات منبع را به صورت JSON وارد کنید:\n\n"
-        f"💡 نمونه:\n<code>{hint}</code>",
-        parse_mode="HTML",
+        f"نمونه:\n{hint}"
     )
     await state.set_state(AddSourceStates.waiting_for_config)
 
 
 @router.message(AddSourceStates.waiting_for_config)
 async def add_source_config(message: Message, state: FSMContext) -> None:
-    if not message.from_user or not await _is_authorized(message.from_user.id):
+    if not message.from_user or not await is_authorized(message.from_user.id):
         return
 
     config_str = (message.text or "").strip()
 
-    # Validate JSON
     try:
-        config = json.loads(config_str)
+        json.loads(config_str)
     except json.JSONDecodeError:
         await message.answer("❌ فرمت JSON نامعتبر است. لطفاً دوباره وارد کنید.")
         return
@@ -381,37 +312,41 @@ async def add_source_config(message: Message, state: FSMContext) -> None:
         new_source = Source(
             name=src_name,
             type=src_type,
-            config_json=json.dumps(config, ensure_ascii=False),
+            config_json=json.dumps(json.loads(config_str), ensure_ascii=False),
             is_active=True,
         )
         session.add(new_source)
         await session.commit()
 
-        await _log_admin(session, message.from_user.id, "add_source",
-                         f"Added source: {src_name} ({src_type})")
-
+    await _log_admin(message.from_user.id, "add_source", f"Added: {src_name} ({src_type})")
     await state.clear()
 
     await message.answer(
-        f"✅ منبع جدید با موفقیت اضافه شد!\n\n"
+        f"✅ منبع جدید اضافه شد!\n\n"
         f"📝 نام: {src_name}\n"
         f"📁 نوع: {src_type}\n"
-        f"⚙️ تنظیمات: <code>{config_str}</code>",
-        parse_mode="HTML",
+        f"⚙️ تنظیمات: {config_str}"
     )
 
 
-# ──────────────────── Manual Crawl ────────────────────
+# ──────────── Manual Crawl ────────────
 
-
-@router.callback_query(F.data.startswith("src:crawl:"))
-async def cb_crawl_single(callback: CallbackQuery) -> None:
-    if not callback.from_user or not await _is_authorized(callback.from_user.id):
+@router.callback_query(F.data.startswith("srccrawl:"))
+async def cb_crawl(callback: CallbackQuery) -> None:
+    if not callback.from_user or not await is_authorized(callback.from_user.id):
         await callback.answer("⛔", show_alert=True)
         return
 
-    src_id = int((callback.data or "").split(":")[2])
+    target = callback.data.split(":")[1]
 
+    if target == "all":
+        await callback.answer("⏳ کراول همه منابع شروع شد")
+        from app.services.scheduler import _run_collectors
+        asyncio.create_task(_run_collectors())
+        await callback.message.answer("🚀 کراول تمام منابع شروع شد. نتایج به‌زودی ذخیره می‌شوند.")
+        return
+
+    src_id = int(target)
     await callback.answer("⏳ در حال کراول...")
 
     async with async_session_factory() as session:
@@ -419,16 +354,15 @@ async def cb_crawl_single(callback: CallbackQuery) -> None:
         src = result.scalar_one_or_none()
 
     if not src:
-        await callback.answer("❌ منبع یافت نشد", show_alert=True)
+        await callback.message.answer("❌ منبع یافت نشد.")
         return
 
     from app.collectors import COLLECTOR_MAP
     from app.processors.pipeline import process_single_item
-    from datetime import datetime, timezone
 
     collector_cls = COLLECTOR_MAP.get(src.type)
     if not collector_cls:
-        await callback.answer("❌ نوع منبع پشتیبانی نمی‌شود", show_alert=True)
+        await callback.message.answer("❌ نوع منبع پشتیبانی نمی‌شود.")
         return
 
     config = json.loads(src.config_json) if src.config_json else {}
@@ -451,39 +385,12 @@ async def cb_crawl_single(callback: CallbackQuery) -> None:
                 new_count += 1
             await session.commit()
 
-    # Update last fetch
     async with async_session_factory() as session:
         await session.execute(
-            update(Source).where(Source.id == src.id).values(
+            update(Source).where(Source.id == src_id).values(
                 last_fetch_at=datetime.now(timezone.utc)
             )
         )
         await session.commit()
 
-    await callback.message.answer(f"✅ کراول «{src.name}» انجام شد. {new_count} مطلب جدید.")
-
-
-@router.callback_query(F.data == "src:crawl_all")
-async def cb_crawl_all(callback: CallbackQuery) -> None:
-    if not callback.from_user or not await _is_authorized(callback.from_user.id):
-        await callback.answer("⛔", show_alert=True)
-        return
-
-    await callback.answer("⏳ در حال کراول همه منابع...")
-
-    from app.services.scheduler import _run_collectors
-    asyncio.create_task(_run_collectors())
-
-    await callback.message.answer("🚀 کراول تمام منابع شروع شد. نتایج به‌زودی ارسال می‌شوند.")
-
-
-# ──────────────────── Helpers ────────────────────
-
-import asyncio
-
-
-async def _log_admin(session, admin_id: int, action_type: str, description: str) -> None:
-    """Log an admin action."""
-    log = AdminLog(admin_id=admin_id, action_type=action_type, description=description)
-    session.add(log)
-    await session.flush()
+    await callback.message.answer(f"✅ کراول «{src.name}»: {new_count} مطلب جدید.")
