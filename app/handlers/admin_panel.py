@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from loguru import logger
@@ -14,7 +12,7 @@ from app.models.models import User, Source, ContentItem, DeliveredLog
 router = Router(name="admin_panel")
 
 
-async def is_authorized(uid: int) -> bool:
+async def _is_authorized(uid: int) -> bool:
     if uid == settings.super_admin_id:
         return True
     async with async_session_factory() as session:
@@ -22,87 +20,96 @@ async def is_authorized(uid: int) -> bool:
         return result.scalar_one_or_none() is not None
 
 
+async def safe_edit(message, text, reply_markup=None, parse_mode="Markdown"):
+    try:
+        await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except Exception as e:
+        err = str(e).lower()
+        if "message is not modified" in err:
+            pass
+        else:
+            logger.error(f"safe_edit error: {e}")
+
+
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     buttons = [
-        [InlineKeyboardButton(text="📊 داشبورد وضعیت", callback_data="dash:status")],
-        [InlineKeyboardButton(text="📡 مدیریت منابع", callback_data="src_menu:show")],
-        [InlineKeyboardButton(text="🏷️ هشتگ‌ها و کلمات", callback_data="kw_menu:show")],
-        [InlineKeyboardButton(text="📂 دسته‌بندی‌ها", callback_data="cat_menu:show")],
-        [InlineKeyboardButton(text="📬 دریافت‌کنندگان", callback_data="rcv_menu:show")],
-        [InlineKeyboardButton(text="⏰ زمان‌بندی", callback_data="sch_menu:show")],
-        [InlineKeyboardButton(text="👥 مدیران", callback_data="adm_menu:show")],
-        [InlineKeyboardButton(text="🔧 ابزارهای سیستم", callback_data="sys_menu:show")],
+        [InlineKeyboardButton(text="📊 داشبورد وضعیت", callback_data="menu:status")],
+        [InlineKeyboardButton(text="📡 مدیریت منابع", callback_data="menu:sources")],
+        [InlineKeyboardButton(text="🏷️ هشتگ‌ها و کلمات", callback_data="menu:keywords")],
+        [InlineKeyboardButton(text="📂 دسته‌بندی‌ها", callback_data="menu:categories")],
+        [InlineKeyboardButton(text="📬 دریافت‌کنندگان", callback_data="menu:receivers")],
+        [InlineKeyboardButton(text="⏰ زمان‌بندی", callback_data="menu:schedule")],
+        [InlineKeyboardButton(text="👥 مدیران", callback_data="menu:admins")],
+        [InlineKeyboardButton(text="🔧 ابزارهای سیستم", callback_data="menu:system")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 async def show_main_menu(target) -> None:
     text = (
-        "🤖 پنل مدیریت ربات کیوریتور هوش مصنوعی\n\n"
+        "🤖 *پنل مدیریت ربات کیوریتور هوش مصنوعی*\n\n"
         "از منوی زیر بخش موردنظرتان را انتخاب کنید:"
     )
     kb = main_menu_keyboard()
     if isinstance(target, Message):
-        await target.answer(text, reply_markup=kb)
+        await target.answer(text, reply_markup=kb, parse_mode="Markdown")
     elif isinstance(target, CallbackQuery):
-        await target.message.edit_text(text, reply_markup=kb)
+        await safe_edit(target.message, text, kb)
 
 
-@router.callback_query(F.data == "back:main")
-async def cb_back_main(callback: CallbackQuery) -> None:
-    if not callback.from_user or not await is_authorized(callback.from_user.id):
-        await callback.answer("⛔", show_alert=True)
+@router.callback_query(F.data == "menu:main")
+async def cb_main_menu(callback: CallbackQuery) -> None:
+    if not callback.from_user or not await _is_authorized(callback.from_user.id):
+        await callback.answer("⛔ دسترسی ندارید", show_alert=True)
         return
-    await show_main_menu(callback)
     await callback.answer()
+    await show_main_menu(callback)
 
 
-@router.callback_query(F.data == "dash:status")
+@router.callback_query(F.data == "menu:status")
 async def cb_status(callback: CallbackQuery) -> None:
-    if not callback.from_user or not await is_authorized(callback.from_user.id):
+    if not callback.from_user or not await _is_authorized(callback.from_user.id):
         await callback.answer("⛔", show_alert=True)
         return
+
+    from datetime import datetime, timezone
 
     async with async_session_factory() as session:
-        active_res = await session.execute(
+        r1 = await session.execute(
             select(sqlfunc.count(Source.id)).where(Source.is_active == True)
         )
-        active_count = active_res.scalar() or 0
+        active_count = r1.scalar() or 0
 
-        total_res = await session.execute(select(sqlfunc.count(Source.id)))
-        total_count = total_res.scalar() or 0
+        r2 = await session.execute(select(sqlfunc.count(Source.id)))
+        total_count = r2.scalar() or 0
 
         today_start = datetime.now(timezone.utc).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
 
-        today_res = await session.execute(
-            select(sqlfunc.count(ContentItem.id)).where(
-                ContentItem.created_at >= today_start
-            )
+        r3 = await session.execute(
+            select(sqlfunc.count(ContentItem.id)).where(ContentItem.created_at >= today_start)
         )
-        today_count = today_res.scalar() or 0
+        today_count = r3.scalar() or 0
 
-        deliv_res = await session.execute(
-            select(sqlfunc.count(DeliveredLog.id)).where(
-                DeliveredLog.delivered_at >= today_start
-            )
+        r4 = await session.execute(
+            select(sqlfunc.count(DeliveredLog.id)).where(DeliveredLog.delivered_at >= today_start)
         )
-        delivered_count = deliv_res.scalar() or 0
+        delivered_count = r4.scalar() or 0
 
     from app.config import settings as cfg
     openai_ok = "✅" if cfg.openai_api_key else "❌"
-    mimo_ok = "✅" if cfg.mimo_api_key and cfg.mimo_api_key != "your-mimo-api-key" else "❌"
+    mimo_ok = "✅" if cfg.mimo_api_key else "❌"
     deepseek_ok = "✅" if cfg.deepseek_api_key else "❌"
     telethon_ok = "✅" if cfg.telethon_api_id else "❌"
     twitter_ok = "✅" if cfg.twitter_bearer_token else "❌"
 
     text = (
-        "📊 داشبورد وضعیت\n\n"
-        f"📡 منابع فعال: {active_count} از {total_count}\n"
-        f"📥 مطالب امروز: {today_count}\n"
-        f"📤 ارسال‌شده امروز: {delivered_count}\n\n"
-        "🔌 وضعیت APIها:\n"
+        "📊 *داشبورد وضعیت*\n\n"
+        f"📡 منابع فعال: *{active_count}* از *{total_count}*\n"
+        f"📥 مطالب امروز: *{today_count}*\n"
+        f"📤 ارسال‌شده امروز: *{delivered_count}*\n\n"
+        "🔌 *وضعیت APIها:*\n"
         f"  OpenAI: {openai_ok}\n"
         f"  MiMo: {mimo_ok}\n"
         f"  DeepSeek: {deepseek_ok}\n"
@@ -111,9 +118,31 @@ async def cb_status(callback: CallbackQuery) -> None:
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data="dash:status")],
-        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="back:main")],
+        [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data="menu:status")],
+        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu:main")],
     ])
 
-    await callback.message.edit_text(text, reply_markup=kb)
     await callback.answer()
+    await safe_edit(callback.message, text, kb)
+
+
+@router.callback_query(F.data == "menu:sources")
+async def cb_sources_menu(callback: CallbackQuery) -> None:
+    if not callback.from_user or not await _is_authorized(callback.from_user.id):
+        await callback.answer("⛔", show_alert=True)
+        return
+
+    buttons = [
+        [InlineKeyboardButton(text="📋 لیست منابع", callback_data="src:list:0")],
+        [InlineKeyboardButton(text="➕ افزودن منبع جدید", callback_data="src:add")],
+        [InlineKeyboardButton(text="🗑️ حذف منبع", callback_data="src:del_prompt")],
+        [InlineKeyboardButton(text="🔄 کراول دستی (همه)", callback_data="src:crawl_all")],
+        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu:main")],
+    ]
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await callback.answer()
+    await safe_edit(
+        callback.message,
+        "📡 *مدیریت منابع*\n\nاز گزینه‌های زیر استفاده کنید:",
+        kb,
+    )
