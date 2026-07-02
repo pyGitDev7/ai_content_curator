@@ -20,8 +20,8 @@ router = Router(name="panel")
 async def is_authorized(uid: int) -> bool:
     if uid == settings.super_admin_id:
         return True
-    async with async_session_factory() as session:
-        r = await session.execute(select(User).where(User.telegram_id == uid))
+    async with async_session_factory() as s:
+        r = await s.execute(select(User).where(User.telegram_id == uid))
         return r.scalar_one_or_none() is not None
 
 
@@ -61,20 +61,20 @@ def main_kb():
     ])
 
 
-# ── MAIN MENU ──
+# ══════════════════════════════════════════════
+# MAIN MENU
+# ══════════════════════════════════════════════
 
 @router.callback_query(F.data == "p:main")
 async def cb_main(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await safe_answer(callback)
-    await safe_edit(
-        callback.message,
-        "🤖 <b>پنل مدیریت</b>\n\nاز منوی زیر انتخاب کنید:",
-        main_kb(),
-    )
+    await safe_edit(callback.message, "🤖 <b>پنل مدیریت</b>\n\nاز منوی زیر انتخاب کنید:", main_kb())
 
 
-# ── STATUS ──
+# ══════════════════════════════════════════════
+# STATUS
+# ══════════════════════════════════════════════
 
 @router.callback_query(F.data == "p:status")
 async def cb_status(callback: CallbackQuery) -> None:
@@ -110,7 +110,9 @@ async def cb_status(callback: CallbackQuery) -> None:
     await safe_edit(callback.message, txt, kb)
 
 
-# ── SOURCES ──
+# ══════════════════════════════════════════════
+# SOURCES
+# ══════════════════════════════════════════════
 
 SRC_EMOJI = {
     "rss": "📰", "telegram": "✈️", "twitter": "🐦", "reddit": "🟠",
@@ -122,15 +124,19 @@ SRC_EMOJI = {
 async def cb_sources(callback: CallbackQuery) -> None:
     if not callback.from_user or not await is_authorized(callback.from_user.id):
         return
+    txt = (
+        "📡 <b>مدیریت منابع</b>\n\n"
+        "💡 منابع، جاهایی هستن که ربات ازشون محتوا جمع می‌کنه.\n"
+        "RSS، کانال تلگرام، توییتر، Reddit، GitHub و ..."
+    )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 لیست منابع", callback_data="p:sl:0")],
-        [InlineKeyboardButton(text="➕ افزودن منبع", callback_data="wiz:src")],
-        [InlineKeyboardButton(text="🗑️ حذف منبع", callback_data="wiz:src_del")],
+        [InlineKeyboardButton(text="➕ افزودن منبع جدید", callback_data="wiz:src")],
         [InlineKeyboardButton(text="🔄 کراول همه الان", callback_data="p:crawl_all")],
         [InlineKeyboardButton(text="🔙", callback_data="p:main")],
     ])
     await safe_answer(callback)
-    await safe_edit(callback.message, "📡 <b>مدیریت منابع</b>", kb)
+    await safe_edit(callback.message, txt, kb)
 
 
 @router.callback_query(F.data.startswith("p:sl:"))
@@ -138,35 +144,47 @@ async def cb_src_list(callback: CallbackQuery) -> None:
     if not callback.from_user or not await is_authorized(callback.from_user.id):
         return
     page = int(callback.data.split(":")[2])
-    pp = 6
+    pp = 5
     off = page * pp
     async with async_session_factory() as s:
         srcs = (await s.execute(select(Source).order_by(Source.id).offset(off).limit(pp))).scalars().all()
         tot = len((await s.execute(select(Source))).scalars().all())
     await safe_answer(callback)
     if not srcs:
-        await safe_edit(callback.message, "📋 منبعی نیست.",
+        await safe_edit(callback.message, "📋 منبعی نیست.\n\n💡 برای افزودن: ➕ افزودن منبع جدید",
                         InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙", callback_data="p:sources")]]))
         return
-    lines = ["📋 <b>منابع:</b>\n"]
+    lines = ["📋 <b>منابع:</b>\n\n"]
     btns = []
     for src in srcs:
         st = "🟢" if src.is_active else "🔴"
         em = SRC_EMOJI.get(src.type, "📁")
-        lines.append(f"{st} <code>{src.id}</code> {em} {src.name}")
+        lf = ""
+        if src.last_fetch_at:
+            lf = f" | {src.last_fetch_at.strftime('%m/%d %H:%M')}"
+        lines.append(f"{st} <code>{src.id}</code> {em} <b>{src.name}</b>")
+        lines.append(f"    نوع: {src.type}{lf}")
+        lines.append("")
         btns.append([
-            InlineKeyboardButton(text="🔴OFF" if src.is_active else "🟢ON", callback_data=f"p:tg:{src.id}:{page}"),
+            InlineKeyboardButton(text="🔴 غیرفعال" if src.is_active else "🟢 فعال", callback_data=f"p:tg:{src.id}:{page}"),
             InlineKeyboardButton(text="🔄 کراول", callback_data=f"p:cr:{src.id}"),
+            InlineKeyboardButton(text="🗑️", callback_data=f"p:sd:{src.id}:{page}"),
         ])
+
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"p:sl:{page - 1}"))
+        nav.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"p:sl:{page - 1}"))
+    nav.append(InlineKeyboardButton(text=f"📄 {page + 1}", callback_data="p:none"))
     if off + pp < tot:
-        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"p:sl:{page + 1}"))
-    if nav:
-        btns.append(nav)
-    btns.append([InlineKeyboardButton(text="🔙", callback_data="p:sources")])
+        nav.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"p:sl:{page + 1}"))
+    btns.append(nav)
+    btns.append([InlineKeyboardButton(text="➕ افزودن", callback_data="wiz:src"), InlineKeyboardButton(text="🔙", callback_data="p:sources")])
     await safe_edit(callback.message, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=btns))
+
+
+@router.callback_query(F.data == "p:none")
+async def cb_none(callback: CallbackQuery):
+    await safe_answer(callback)
 
 
 @router.callback_query(F.data.startswith("p:tg:"))
@@ -185,6 +203,28 @@ async def cb_toggle(callback: CallbackQuery) -> None:
         new_st, name = src.is_active, src.name
         await s.commit()
     await safe_answer(callback, f"{'✅ فعال' if new_st else '🔴 غیرفعال'}: {name}")
+    callback.data = f"p:sl:{page}"
+    await cb_src_list(callback)
+
+
+@router.callback_query(F.data.startswith("p:sd:"))
+async def cb_src_delete(callback: CallbackQuery) -> None:
+    """Delete source directly from list via inline button."""
+    if not callback.from_user or not await is_authorized(callback.from_user.id):
+        return
+    parts = callback.data.split(":")
+    sid, page = int(parts[2]), int(parts[3])
+    async with async_session_factory() as s:
+        r = await s.execute(select(Source).where(Source.id == sid))
+        src = r.scalar_one_or_none()
+        if not src:
+            await safe_answer(callback, "❌", True)
+            return
+        name = src.name
+        stype = src.type
+        await s.delete(src)
+        await s.commit()
+    await safe_answer(callback, f"🗑️ «{name}» حذف شد")
     callback.data = f"p:sl:{page}"
     await cb_src_list(callback)
 
@@ -229,10 +269,12 @@ async def cb_crawl_all(callback: CallbackQuery) -> None:
     await safe_answer(callback, "⏳ ...")
     from app.services.scheduler import _run_collectors
     asyncio.create_task(_run_collectors())
-    await callback.message.answer("🚀 کراول همه منابع شروع شد.")
+    await callback.message.answer("🚀 کراول همه منابع شروع شد.\n\n⏳ بسته به تعداد منابع، چند دقیقه طول می‌کشه.")
 
 
-# ── NEWS DELIVERY ──
+# ══════════════════════════════════════════════
+# NEWS DELIVERY
+# ══════════════════════════════════════════════
 
 @router.callback_query(F.data == "p:news")
 async def cb_news(callback: CallbackQuery) -> None:
@@ -241,19 +283,26 @@ async def cb_news(callback: CallbackQuery) -> None:
     async with async_session_factory() as s:
         rv = (await s.execute(select(Setting.value).where(Setting.key == "receiver_ids"))).scalar_one_or_none()
         try:
-            rc_n = len(json.loads(rv)) if rv else 0
+            rids = json.loads(rv) if rv else []
         except:
-            rc_n = 0
+            rids = []
         undel = (await s.execute(select(sqlfunc.count(ContentItem.id)).where(
             ContentItem.processed == True, ContentItem.delivered == False))).scalar() or 0
 
     txt = (
         f"📥 <b>دریافت اخبار</b>\n\n"
-        f"📬 دریافت‌کنندگان: <b>{rc_n}</b>\n"
-        f"📋 مطالب آماده: <b>{undel}</b>"
+        f"💡 از اینجا می‌تونی:\n"
+        f"• الان مطالب رو جمع‌آوری کنی\n"
+        f"• خلاصه مطالب رو الان بفرستی\n"
+        f"• مطالب اخیر رو ببینی\n\n"
+        f"📬 دریافت‌کنندگان: <b>{len(rids)}</b>\n"
+        f"📋 مطالب آماده ارسال: <b>{undel}</b>"
     )
+    if not rids:
+        txt += "\n\n⚠️ <b>هیچ دریافت‌کننده‌ای تنظیم نشده!</b>\nاز بخش «📬 دریافت‌کنندگان» اضافه کن."
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 جمع‌آوری الان", callback_data="p:fetch_now")],
+        [InlineKeyboardButton(text="🔄 جمع‌آوری مطالب الان", callback_data="p:fetch_now")],
         [InlineKeyboardButton(text="📤 ارسال خلاصه الان", callback_data="p:send_now")],
         [InlineKeyboardButton(text="📋 مطالب اخیر", callback_data="p:recent:0")],
         [InlineKeyboardButton(text="🔙", callback_data="p:main")],
@@ -269,7 +318,13 @@ async def cb_fetch_now(callback: CallbackQuery) -> None:
     await safe_answer(callback, "⏳ ...")
     from app.services.scheduler import _run_collectors
     asyncio.create_task(_run_collectors())
-    await callback.message.answer("🔄 جمع‌آوری شروع شد. چند دقیقه صبر کن.")
+    await callback.message.answer(
+        "🔄 <b>جمع‌آوری شروع شد!</b>\n\n"
+        "⏳ بسته به تعداد منابع و سرعت اینترنت، ۲ تا ۱۰ دقیقه طول می‌کشه.\n"
+        "نتایج توی دیتابیس ذخیره میشن.\n\n"
+        "بعد از اتمام، از بخش «📋 مطالب اخیر» میتونی نتایج رو ببینی.",
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data == "p:send_now")
@@ -279,7 +334,7 @@ async def cb_send_now(callback: CallbackQuery) -> None:
     await safe_answer(callback, "⏳ ...")
     from app.services.delivery import deliver_digest
     await deliver_digest(callback.bot)
-    await callback.message.answer("📤 ارسال انجام شد.")
+    await callback.message.answer("📤 ارسال انجام شد.\nاگه پیامی دریافت نکردی، چک کن دریافت‌کننده تنظیم شده باشه.")
 
 
 @router.callback_query(F.data.startswith("p:recent:"))
@@ -296,7 +351,7 @@ async def cb_recent(callback: CallbackQuery) -> None:
         )).scalars().all()
     await safe_answer(callback)
     if not items:
-        await safe_edit(callback.message, "📋 مطلبی نیست.",
+        await safe_edit(callback.message, "📋 مطلبی نیست.\n\n💡 اول «🔄 جمع‌آوری مطالب» رو بزن.",
                         InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙", callback_data="p:news")]]))
         return
     ce = {"tutorial": "📚", "news": "📰", "tool": "🔧", "prompt": "💬", "paper": "📄", "other": "📌"}
@@ -305,6 +360,8 @@ async def cb_recent(callback: CallbackQuery) -> None:
         em = ce.get(i.category or "other", "📌")
         d = "📤" if i.delivered else "📥"
         lines.append(f"{d} {em} <b>{i.title[:50]}</b>")
+        if i.summary:
+            lines.append(f"  {i.summary[:100]}...")
         lines.append(f"  ⭐{i.score}/10")
         if i.url:
             lines.append(f'  🔗 <a href="{i.url}">لینک</a>')
@@ -321,7 +378,9 @@ async def cb_recent(callback: CallbackQuery) -> None:
     await safe_edit(callback.message, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=btns))
 
 
-# ── KEYWORDS & HASHTAGS ──
+# ══════════════════════════════════════════════
+# KEYWORDS & HASHTAGS
+# ══════════════════════════════════════════════
 
 @router.callback_query(F.data == "p:kw")
 async def cb_kw(callback: CallbackQuery) -> None:
@@ -332,31 +391,98 @@ async def cb_kw(callback: CallbackQuery) -> None:
         hts = (await s.execute(select(Hashtag).order_by(Hashtag.id))).scalars().all()
     pos = [k for k in kws if not k.is_negative]
     neg = [k for k in kws if k.is_negative]
-    lines = ["🏷️ <b>کلمات و هشتگ‌ها</b>\n"]
+
+    lines = [
+        "🏷️ <b>کلمات و هشتگ‌ها</b>\n",
+        "",
+        "💡 <b>راهنما:</b>",
+        "• کلمات مثبت: اگه تنظیم کنی، فقط مطالبی که حداقل یکی از این کلمات رو داشته باشن جمع میشن",
+        "• کلمات منفی: مطالبی که این کلمات رو داشته باشن رد میشن",
+        "• هشتگ‌ها: توی پیام‌های ارسالی استفاده میشن",
+        "",
+    ]
+
+    btns = []
+
     if pos:
-        lines.append("\n✅ مثبت:")
-        lines.extend(f"  • <code>{k.word}</code> (ID:{k.id})" for k in pos)
+        lines.append("✅ <b>کلمات مثبت:</b>")
+        for k in pos:
+            lines.append(f"  • <code>{k.word}</code>")
+        lines.append("")
+        for k in pos:
+            btns.append([InlineKeyboardButton(text=f"🗑️ {k.word}", callback_data=f"p:kwrm:{k.id}")])
+
     if neg:
-        lines.append("\n🚫 منفی:")
-        lines.extend(f"  • <code>{k.word}</code> (ID:{k.id})" for k in neg)
+        lines.append("🚫 <b>کلمات منفی:</b>")
+        for k in neg:
+            lines.append(f"  • <code>{k.word}</code>")
+        lines.append("")
+        for k in neg:
+            btns.append([InlineKeyboardButton(text=f"🗑️ {k.word}", callback_data=f"p:kwrm:{k.id}")])
+
     if hts:
-        lines.append("\n#️⃣ هشتگ‌ها:")
-        lines.extend(f"  • #{h.tag} (ID:{h.id})" for h in hts)
+        lines.append("#️⃣ <b>هشتگ‌ها:</b>")
+        for h in hts:
+            lines.append(f"  • #{h.tag}")
+        lines.append("")
+        for h in hts:
+            btns.append([InlineKeyboardButton(text=f"🗑️ #{h.tag}", callback_data=f"p:htrm:{h.id}")])
+
     if not pos and not neg and not hts:
-        lines.append("\nچیزی ثبت نشده.")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ کلمه مثبت", callback_data="wiz:kw_pos"),
-         InlineKeyboardButton(text="➖ کلمه منفی", callback_data="wiz:kw_neg")],
-        [InlineKeyboardButton(text="➕ هشتگ", callback_data="wiz:ht_add"),
-         InlineKeyboardButton(text="🗑️ حذف هشتگ", callback_data="wiz:ht_del")],
-        [InlineKeyboardButton(text="🗑️ حذف کلمه", callback_data="wiz:kw_del")],
-        [InlineKeyboardButton(text="🔙", callback_data="p:main")],
+        lines.append("⚠️ هنوز چیزی ثبت نشده.\nاز دکمه‌های زیر استفاده کن.")
+
+    btns.append([
+        InlineKeyboardButton(text="➕ کلمه مثبت", callback_data="wiz:kw_pos"),
+        InlineKeyboardButton(text="➖ کلمه منفی", callback_data="wiz:kw_neg"),
     ])
+    btns.append([InlineKeyboardButton(text="➕ هشتگ", callback_data="wiz:ht_add")])
+    btns.append([InlineKeyboardButton(text="🔙", callback_data="p:main")])
+
     await safe_answer(callback)
-    await safe_edit(callback.message, "\n".join(lines), kb)
+    await safe_edit(callback.message, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=btns))
 
 
-# ── CATEGORIES ──
+@router.callback_query(F.data.startswith("p:kwrm:"))
+async def cb_kwrm(callback: CallbackQuery) -> None:
+    if not callback.from_user or not await is_authorized(callback.from_user.id):
+        return
+    kid = int(callback.data.split(":")[2])
+    async with async_session_factory() as s:
+        r = await s.execute(select(Keyword).where(Keyword.id == kid))
+        kw = r.scalar_one_or_none()
+        if kw:
+            w = kw.word
+            await s.delete(kw)
+            await s.commit()
+            await safe_answer(callback, f"🗑️ «{w}» حذف شد")
+        else:
+            await safe_answer(callback, "❌", True)
+    callback.data = "p:kw"
+    await cb_kw(callback)
+
+
+@router.callback_query(F.data.startswith("p:htrm:"))
+async def cb_htrm(callback: CallbackQuery) -> None:
+    if not callback.from_user or not await is_authorized(callback.from_user.id):
+        return
+    hid = int(callback.data.split(":")[2])
+    async with async_session_factory() as s:
+        r = await s.execute(select(Hashtag).where(Hashtag.id == hid))
+        ht = r.scalar_one_or_none()
+        if ht:
+            t = ht.tag
+            await s.delete(ht)
+            await s.commit()
+            await safe_answer(callback, f"🗑️ #{t} حذف شد")
+        else:
+            await safe_answer(callback, "❌", True)
+    callback.data = "p:kw"
+    await cb_kw(callback)
+
+
+# ══════════════════════════════════════════════
+# CATEGORIES
+# ══════════════════════════════════════════════
 
 CATS = {
     "tutorial": "📚 آموزشی", "news": "📰 خبر", "tool": "🔧 ابزار",
@@ -376,8 +502,13 @@ async def cb_cats(callback: CallbackQuery) -> None:
         btns.append([InlineKeyboardButton(text=f"{st} {lb}", callback_data=f"p:ct:{k}")])
     btns.append([InlineKeyboardButton(text="🔙", callback_data="p:main")])
     await safe_answer(callback)
-    await safe_edit(callback.message, "📂 <b>دسته‌بندی‌ها</b>\nبرای روشن/خاموش کلیک کنید:",
-                    InlineKeyboardMarkup(inline_keyboard=btns))
+    await safe_edit(
+        callback.message,
+        "📂 <b>دسته‌بندی‌ها</b>\n\n"
+        "💡 فقط دسته‌بندی‌های فعال توی خلاصه روزانه ارسال میشن.\n"
+        "برای روشن/خاموش کردن کلیک کنید:",
+        InlineKeyboardMarkup(inline_keyboard=btns),
+    )
 
 
 @router.callback_query(F.data.startswith("p:ct:"))
@@ -404,7 +535,9 @@ async def cb_cat_toggle(callback: CallbackQuery) -> None:
     await cb_cats(callback)
 
 
-# ── RECEIVERS ──
+# ══════════════════════════════════════════════
+# RECEIVERS
+# ══════════════════════════════════════════════
 
 @router.callback_query(F.data == "p:rcv")
 async def cb_rcv(callback: CallbackQuery) -> None:
@@ -416,16 +549,34 @@ async def cb_rcv(callback: CallbackQuery) -> None:
             rids = json.loads(rv) if rv else []
         except:
             rids = []
-    txt = "📬 <b>دریافت‌کنندگان:</b>\n" + ("\n".join(f"  • <code>{r}</code>" for r in rids) if rids else "\nهیچکس")
+
+    lines = [
+        "📬 <b>دریافت‌کنندگان</b>\n",
+        "",
+        "💡 این Chat ID‌هایی هستن که خلاصه مطالب براشون ارسال میشه.",
+        "می‌تونه آیدی شخصی شما باشه، یا Chat ID یه کانال/گروه.",
+        "",
+        "برای پیدا کردن Chat ID کانال: پیامی از کانال رو به @userinfobot فوروارد کن.",
+        "",
+    ]
+
+    if rids:
+        lines.append("📋 <b>فعلی:</b>")
+        for r in rids:
+            lines.append(f"  • <code>{r}</code>")
+    else:
+        lines.append("⚠️ <b>هیچ دریافت‌کننده‌ای تنظیم نشده!</b>")
+        lines.append("ربات بدون دریافت‌کننده نمی‌تونه مطالب رو ارسال کنه.")
+
     btns = []
     if rids:
         btns.append([InlineKeyboardButton(text="📨 تست ارسال", callback_data="p:test_rc")])
-    btns.append([InlineKeyboardButton(text="➕ افزودن", callback_data="wiz:rc_add")])
-    if rids:
         btns.append([InlineKeyboardButton(text="🗑️ حذف همه", callback_data="p:rc_rm_all")])
+    btns.append([InlineKeyboardButton(text="➕ افزودن Chat ID", callback_data="wiz:rc_add")])
     btns.append([InlineKeyboardButton(text="🔙", callback_data="p:main")])
+
     await safe_answer(callback)
-    await safe_edit(callback.message, txt, InlineKeyboardMarkup(inline_keyboard=btns))
+    await safe_edit(callback.message, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=btns))
 
 
 @router.callback_query(F.data == "p:test_rc")
@@ -467,7 +618,9 @@ async def cb_rc_rm_all(callback: CallbackQuery) -> None:
     await cb_rcv(callback)
 
 
-# ── SCHEDULE ──
+# ══════════════════════════════════════════════
+# SCHEDULE
+# ══════════════════════════════════════════════
 
 @router.callback_query(F.data == "p:sched")
 async def cb_sched(callback: CallbackQuery) -> None:
@@ -479,12 +632,14 @@ async def cb_sched(callback: CallbackQuery) -> None:
     ms = await _setting("min_score", "0")
     txt = (
         f"⏰ <b>زمان‌بندی</b>\n\n"
-        f"🕐 ساعت خلاصه: <b>{h}:{int(m):02d}</b>\n"
-        f"📊 حداکثر مطالب: <b>{mx}</b>\n"
-        f"⭐ حداقل امتیاز: <b>{ms}</b>\n\n"
-        f"کراول هر ۲ ساعت انجام میشه.\n"
-        f"خلاصه روزانه ساعت {h}:{int(m):02d} ارسال میشه."
+        f"💡 ربات هر ۲ ساعت مطالب رو از منابع جمع‌آوری می‌کنه.\n"
+        f"ساعت <b>{h}:{int(m):02d}</b> بهترین مطالب رو به صورت خلاصه براتون ارسال می‌کنه.\n\n"
+        f"🕐 ساعت ارسال خلاصه: <b>{h}:{int(m):02d}</b>\n"
+        f"📊 حداکثر مطالب در خلاصه: <b>{mx}</b>\n"
+        f"⭐ حداقل امتیاز: <b>{ms}</b>\n"
     )
+    if ms == "0":
+        txt += "\n(فیلتر امتیاز غیرفعاله)"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🕐 تغییر ساعت", callback_data="wiz:time")],
         [InlineKeyboardButton(text="📊 تغییر تعداد", callback_data="wiz:count")],
@@ -495,7 +650,9 @@ async def cb_sched(callback: CallbackQuery) -> None:
     await safe_edit(callback.message, txt, kb)
 
 
-# ── ADMINS ──
+# ══════════════════════════════════════════════
+# ADMINS
+# ══════════════════════════════════════════════
 
 @router.callback_query(F.data == "p:admins")
 async def cb_admins(callback: CallbackQuery) -> None:
@@ -503,38 +660,68 @@ async def cb_admins(callback: CallbackQuery) -> None:
         return
     async with async_session_factory() as s:
         admins = (await s.execute(select(User).order_by(User.id))).scalars().all()
+
+    lines = [
+        "👥 <b>مدیران</b>\n",
+        "",
+        "💡 مدیران می‌تونن به پنل دسترسی داشته باشن و تنظیمات رو تغییر بدن.",
+        "👑 سوپرادمین قابل حذف نیست.",
+        "",
+    ]
+    btns = []
+
     if admins:
-        lines = ["👥 <b>مدیران:</b>\n"]
         for a in admins:
             b = " 👑" if a.is_super_admin else ""
             u = f"@{a.username}" if a.username else "—"
             lines.append(f"  • {u}{b} | <code>{a.telegram_id}</code>")
-        txt = "\n".join(lines)
+            if not a.is_super_admin and callback.from_user.id == settings.super_admin_id:
+                btns.append([InlineKeyboardButton(text=f"🗑️ {u} ({a.telegram_id})", callback_data=f"p:admrm:{a.id}")])
     else:
-        txt = "👥 مدیری نیست."
-    btns = []
+        lines.append("⚠️ مدیری نیست.")
+
     if callback.from_user.id == settings.super_admin_id:
-        btns.append([InlineKeyboardButton(text="➕ افزودن", callback_data="wiz:adm_add")])
-        btns.append([InlineKeyboardButton(text="🗑️ حذف", callback_data="wiz:adm_del")])
+        btns.append([InlineKeyboardButton(text="➕ افزودن مدیر", callback_data="wiz:adm_add")])
     btns.append([InlineKeyboardButton(text="🔙", callback_data="p:main")])
+
     await safe_answer(callback)
-    await safe_edit(callback.message, txt, InlineKeyboardMarkup(inline_keyboard=btns))
+    await safe_edit(callback.message, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=btns))
 
 
-# ── SYSTEM ──
+@router.callback_query(F.data.startswith("p:admrm:"))
+async def cb_adm_rm(callback: CallbackQuery) -> None:
+    if not callback.from_user or callback.from_user.id != settings.super_admin_id:
+        return
+    aid = int(callback.data.split(":")[2])
+    async with async_session_factory() as s:
+        r = await s.execute(select(User).where(User.id == aid))
+        a = r.scalar_one_or_none()
+        if a and not a.is_super_admin:
+            await s.delete(a)
+            await s.commit()
+            await safe_answer(callback, "✅ حذف شد")
+        else:
+            await safe_answer(callback, "❌", True)
+    callback.data = "p:admins"
+    await cb_admins(callback)
+
+
+# ══════════════════════════════════════════════
+# SYSTEM
+# ══════════════════════════════════════════════
 
 @router.callback_query(F.data == "p:sys")
 async def cb_sys(callback: CallbackQuery) -> None:
     if not callback.from_user or not await is_authorized(callback.from_user.id):
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💾 بکاپ", callback_data="p:bak")],
+        [InlineKeyboardButton(text="💾 بکاپ دیتابیس", callback_data="p:bak")],
         [InlineKeyboardButton(text="📋 لاگ‌ها", callback_data="p:logs")],
         [InlineKeyboardButton(text="🔄 ری‌استارت شیدولر", callback_data="p:rsch")],
         [InlineKeyboardButton(text="🔙", callback_data="p:main")],
     ])
     await safe_answer(callback)
-    await safe_edit(callback.message, "🔧 <b>سیستم</b>", kb)
+    await safe_edit(callback.message, "🔧 <b>ابزارهای سیستم</b>", kb)
 
 
 @router.callback_query(F.data == "p:bak")
@@ -549,7 +736,7 @@ async def cb_bak(callback: CallbackQuery) -> None:
     try:
         data = db.read_bytes()
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        await callback.message.answer_document(BufferedInputFile(data, f"backup_{ts}.db"), caption="💾 بکاپ")
+        await callback.message.answer_document(BufferedInputFile(data, f"backup_{ts}.db"), caption="💾 بکاپ دیتابیس")
     except Exception as e:
         await callback.message.answer(f"❌ {e}")
 
