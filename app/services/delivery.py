@@ -1,165 +1,121 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
 from app.models.models import ContentItem, DeliveredLog, Setting
 from app.database import async_session_factory
-from app.utils.helpers import format_content_message, format_digest_message
+from app.config import settings as cfg
+from app.utils.helpers import format_content_html, format_digest_html
 
 
-async def get_setting(session: AsyncSession, key: str, default: str = "") -> str:
-    result = await session.execute(select(Setting.value).where(Setting.key == key))
-    row = result.scalar_one_or_none()
-    return row if row is not None else default
-
-
-async def get_receiver_ids(session: AsyncSession) -> list[int]:
-    raw = await get_setting(session, "receiver_ids", "[]")
-    try:
-        return json.loads(raw)
-    except Exception:
-        return []
-
-
-async def get_max_items(session: AsyncSession) -> int:
-    raw = await get_setting(session, "digest_max_items", "10")
-    try:
-        return int(raw)
-    except Exception:
-        return 10
-
-
-async def get_category_filter(session: AsyncSession) -> list[str]:
-    """Return enabled categories (empty list means all enabled)."""
-    raw = await get_setting(session, "enabled_categories", "")
-    if not raw:
-        return []  # all enabled
-    return [c.strip() for c in raw.split(",") if c.strip()]
-
-
-async def get_min_score(session: AsyncSession) -> float:
-    raw = await get_setting(session, "min_score", "0")
-    try:
-        return float(raw)
-    except Exception:
-        return 0.0
+async def _get_setting(session: AsyncSession, key: str, default: str = "") -> str:
+    r = await session.execute(select(Setting.value).where(Setting.key == key))
+    v = r.scalar_one_or_none()
+    return v if v is not None else default
 
 
 async def deliver_urgent(bot, item: ContentItem) -> None:
-    """Deliver a single high-score item immediately."""
     async with async_session_factory() as session:
-        receiver_ids = await get_receiver_ids(session)
+        raw = await _get_setting(session, "receiver_ids", "[]")
+        try:
+            rids = json.loads(raw)
+        except:
+            rids = []
 
-        if not receiver_ids:
-            logger.warning("No receivers configured for urgent delivery")
-            return
+    if not rids:
+        logger.warning("Urgent delivery skipped: no receivers")
+        return
 
-        hashtags = json.loads(item.tags_json) if item.tags_json else []
-        message = format_content_message(
-            title=item.title,
-            summary=item.summary or "",
-            url=item.url,
-            category=item.category,
-            score=item.score,
-            hashtags=hashtags,
-        )
+    hashtags = json.loads(item.tags_json) if item.tags_json else []
+    msg = format_content_html(
+        title=item.title, summary=item.summary or "",
+        url=item.url, category=item.category, score=item.score, hashtags=hashtags,
+    )
+    for cid in rids:
+        try:
+            await bot.send_message(chat_id=cid, text=msg, parse_mode="HTML")
+            async with async_session_factory() as session:
+                session.add(DeliveredLog(content_id=item.id, chat_id=cid))
+                await session.commit()
+            logger.info(f"Urgent: {item.id} -> {cid}")
+        except Exception as e:
+            logger.error(f"Urgent error {cid}: {e}")
 
-        for chat_id in receiver_ids:
-            try:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=message,
-                    parse_mode="MarkdownV2",
-                    disable_web_page_preview=False,
-                )
-                log = DeliveredLog(content_id=item.id, chat_id=chat_id)
-                session.add(log)
-                logger.info(f"Urgent delivery: item {item.id} -> chat {chat_id}")
-            except Exception as e:
-                logger.error(f"Urgent delivery error to {chat_id}: {e}")
-
-        item.delivered = True
-        await session.commit()
+    async with async_session_factory() as session:
+        r = await session.execute(select(ContentItem).where(ContentItem.id == item.id))
+        db = r.scalar_one_or_none()
+        if db:
+            db.delivered = True
+            await session.commit()
 
 
 async def deliver_digest(bot) -> None:
-    """Deliver a daily digest of top items."""
     async with async_session_factory() as session:
-        receiver_ids = await get_receiver_ids(session)
-        max_items = await get_max_items(session)
-        cat_filter = await get_category_filter(session)
-        min_score = await get_min_score(session)
+        raw_rids = await _get_setting(session, "receiver_ids", "[]")
+        try:
+            rids = json.loads(raw_rids)
+        except:
+            rids = []
+        max_items = int(await _get_setting(session, "digest_max_items", str(cfg.digest_max_items)))
+        min_score = float(await _get_setting(session, "min_score", "0"))
 
-        if not receiver_ids:
-            logger.warning("No receivers configured for digest")
-            return
+    if not rids:
+        logger.warning("Digest: no receivers configured!")
+        try:
+            await bot.send_message(
+                chat_id=cfg.super_admin_id,
+                text="⚠️ خلاصه ارسال نشد: هیچ دریافت‌کننده‌ای تنظیم نشده.\nاز پنل > دریافت‌کنندگان > افزودن",
+            )
+        except:
+            pass
+        return
 
-        # Build query for undelivered, processed items
-        query = (
+    async with async_session_factory() as session:
+        result = await session.execute(
             select(ContentItem)
-            .where(ContentItem.processed == True)
-            .where(ContentItem.delivered == False)
-            .where(ContentItem.score >= min_score)
+            .where(ContentItem.processed == True, ContentItem.delivered == False, ContentItem.score >= min_score)
             .order_by(ContentItem.score.desc())
             .limit(max_items)
         )
-
-        result = await session.execute(query)
         items = result.scalars().all()
 
-        # Apply category filter
-        if cat_filter:
-            items = [i for i in items if i.category in cat_filter]
-
-        if not items:
-            logger.info("No new items for digest")
-            # Send "no content" message
-            for chat_id in receiver_ids:
-                try:
-                    await bot.send_message(
-                        chat_id=chat_id,
-                        text="📭 امروز محتوای جدیدی برای ارسال وجود ندارد.",
-                    )
-                except Exception as e:
-                    logger.error(f"Empty digest send error to {chat_id}: {e}")
-            return
-
-        # Format digest
-        digest_items = [
-            {
-                "title": item.title,
-                "summary": item.summary or "",
-                "url": item.url,
-                "category": item.category or "other",
-                "score": item.score,
-            }
-            for item in items
-        ]
-        message = format_digest_message(digest_items)
-
-        for chat_id in receiver_ids:
+    if not items:
+        logger.info("Digest: no new content")
+        for cid in rids:
             try:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=message,
-                    parse_mode="MarkdownV2",
-                    disable_web_page_preview=True,
-                )
-                for item in items:
-                    log = DeliveredLog(content_id=item.id, chat_id=chat_id)
-                    session.add(log)
-                logger.info(f"Digest delivered: {len(items)} items -> chat {chat_id}")
+                await bot.send_message(chat_id=cid, text="📭 امروز محتوای جدیدی نداریم.")
             except Exception as e:
-                logger.error(f"Digest delivery error to {chat_id}: {e}")
+                logger.error(f"Empty digest error {cid}: {e}")
+        return
 
-        # Mark as delivered
-        for item in items:
-            item.delivered = True
+    digest_items = [
+        {"title": i.title, "summary": i.summary or "", "url": i.url,
+         "category": i.category or "other", "score": i.score}
+        for i in items
+    ]
+    msg = format_digest_html(digest_items)
 
-        await session.commit()
+    sent = 0
+    for cid in rids:
+        try:
+            await bot.send_message(chat_id=cid, text=msg, parse_mode="HTML", disable_web_page_preview=True)
+            sent += 1
+        except Exception as e:
+            logger.error(f"Digest error {cid}: {e}")
+
+    if sent > 0:
+        async with async_session_factory() as session:
+            for item in items:
+                r = await session.execute(select(ContentItem).where(ContentItem.id == item.id))
+                db = r.scalar_one_or_none()
+                if db:
+                    db.delivered = True
+                for cid in rids:
+                    session.add(DeliveredLog(content_id=item.id, chat_id=cid))
+            await session.commit()
+
+    logger.info(f"Digest sent: {len(items)} items to {sent}/{len(rids)} receivers")
