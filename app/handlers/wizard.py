@@ -15,23 +15,9 @@ from app.config import settings
 router = Router(name="wizard")
 
 
-class W(StatesGroup):
-    src_type = State()
-    src_1 = State()
-    src_2 = State()
-    src_name = State()
-    src_del = State()
-    kw_input = State()
-    kw_del = State()
-    ht_input = State()
-    ht_del = State()
-    rc_input = State()
-    adm_input = State()
-    adm_del = State()
-    sch_time = State()
-    sch_count = State()
-    sch_score = State()
-
+# ══════════════════════════════════════════════
+# HELPERS
+# ══════════════════════════════════════════════
 
 async def is_auth(uid):
     if uid == settings.super_admin_id:
@@ -62,17 +48,19 @@ async def _log(uid, act, desc):
 
 def cancel_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ لغو و بازگشت", callback_data="w:cancel")]
+        [InlineKeyboardButton(text="❌ لغو و بازگشت به پنل", callback_data="w:cancel")]
     ])
 
 
 def done_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data="w:panel")]
+        [InlineKeyboardButton(text="🏠 بازگشت به پنل", callback_data="w:panel")]
     ])
 
 
-# ── UNIVERSAL CANCEL & BACK ──
+# ══════════════════════════════════════════════
+# CANCEL & BACK
+# ══════════════════════════════════════════════
 
 @router.callback_query(F.data == "w:cancel")
 async def cb_cancel(cb: CallbackQuery, state: FSMContext):
@@ -85,7 +73,7 @@ async def cb_cancel(cb: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "w:panel")
-async def cb_back(cb: CallbackQuery, state: FSMContext):
+async def cb_back_panel(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     try:
         await cb.answer()
@@ -101,9 +89,9 @@ async def cmd_cancel(msg: Message, state: FSMContext):
     await show_panel(msg)
 
 
-# ══════════════════════════════════════════
+# ══════════════════════════════════════════════
 # SOURCE ADDITION WIZARD
-# ══════════════════════════════════════════
+# ══════════════════════════════════════════════
 
 SRC_TYPES = {
     "rss": "📰 RSS/Atom",
@@ -117,22 +105,54 @@ SRC_TYPES = {
 }
 
 SRC_PROMPTS = {
-    "rss": ("لینک فید RSS رو بفرست:\nمثال: https://openai.com/blog/rss", None),
-    "telegram": ("یوزرنیم کانال رو بفرست (بدون @):\nمثال: AIinsights", None),
-    "twitter": ("یوزرنیم توییتر رو بفرست (بدون @):\nمثال: OpenAI", None),
-    "reddit": ("اسم ساب‌ردیت رو بفرست:\nمثال: MachineLearning", None),
-    "website": ("لینک سایت رو بفرست:\nمثال: https://example.com", "سلکتور CSS رو بفرست:\nمثال: article"),
-    "github": ("زبان رو بفرست (یا all):\nمثال: python", "بازه زمانی (daily/weekly/monthly):"),
-    "hackernews": ("کلمات کلیدی (با کاما):\nمثال: AI, LLM, GPT", "حداکثر تعداد (مثلاً 30):"),
-    "arxiv": ("کوئری جستجو:\nمثال: cat:cs.AI OR cat:cs.CL", "کلمات کلیدی (با کاما):\nمثال: LLM, prompt"),
+    "rss": {
+        "step1": "📝 لینک فید RSS رو بفرست:\n\nمثال:\n<code>https://openai.com/blog/rss</code>\n<code>https://huggingface.co/blog/feed.xml</code>",
+        "key": "url",
+    },
+    "telegram": {
+        "step1": "📝 یوزرنیم کانال تلگرام رو بفرست (بدون @):\n\nمثال: <code>AIinsights</code>",
+        "key": "channel",
+    },
+    "twitter": {
+        "step1": "📝 یوزرنیم توییتر رو بفرست (بدون @):\n\nمثال: <code>OpenAI</code>",
+        "key": "username",
+    },
+    "reddit": {
+        "step1": "📝 اسم ساب‌ردیت رو بفرست (بدون r/):\n\nمثال: <code>MachineLearning</code>",
+        "key": "subreddit",
+    },
+    "website": {
+        "step1": "📝 لینک سایت رو بفرست:\n\nمثال: <code>https://example.com/blog</code>",
+        "step2": "📝 سلکتور CSS محتوا رو بفرست:\n(عنصر HTML که مطلب توش هست)\n\nمثال: <code>article</code>\n<code>div.post</code>\n<code>.news-item</code>\n\nیا <code>skip</code> بفرست برای پیش‌فرض (article)",
+        "keys": ["url", "selector"],
+        "defaults": {"selector": "article"},
+    },
+    "github": {
+        "step1": "📝 زبان برنامه‌نویسی رو بفرست:\n\nمثال: <code>python</code>\n<code>javascript</code>\n<code>rust</code>\n\nیا <code>all</code> برای همه زبان‌ها",
+        "step2": "📝 بازه زمانی رو بفرست:\n\n<code>daily</code> - ترند امروز\n<code>weekly</code> - ترند این هفته\n<code>monthly</code> - ترند این ماه\n\nیا <code>skip</code> برای daily",
+        "keys": ["language", "since"],
+        "defaults": {"since": "daily"},
+    },
+    "hackernews": {
+        "step1": "📝 کلمات کلیدی رو بفرست (با کاما):\n\nمثال: <code>AI, LLM, GPT, machine learning</code>",
+        "step2": "📝 حداکثر تعداد مطلب رو بفرست:\n\nمثال: <code>30</code>\n\nیا <code>skip</code> برای 30",
+        "keys": ["keywords", "max_items"],
+        "defaults": {"max_items": "30"},
+    },
+    "arxiv": {
+        "step1": "📝 کوئری جستجو رو بفرست:\n\nمثال:\n<code>cat:cs.AI OR cat:cs.CL</code>\n<code>LLM prompt engineering</code>",
+        "step2": "📝 کلمات کلیدی فیلتر (با کاما):\n\nمثال: <code>LLM, prompt, transformer, GPT</code>\n\nیا <code>skip</code> برای همه",
+        "keys": ["query", "keywords"],
+        "defaults": {"keywords": "LLM,prompt,transformer"},
+    },
 }
 
-SRC_DEFAULTS = {
-    "website": ("article",),
-    "github": ("daily",),
-    "hackernews": ("30",),
-    "arxiv": ("LLM,prompt,transformer", "20"),
-}
+
+class WizSrcStates(StatesGroup):
+    choosing_type = State()
+    step1 = State()
+    step2 = State()
+    name = State()
 
 
 @router.callback_query(F.data == "wiz:src")
@@ -146,69 +166,122 @@ async def wiz_src_start(cb: CallbackQuery, state: FSMContext):
     except:
         pass
     try:
-        await cb.message.edit_text("📡 <b>نوع منبع جدید:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns), parse_mode="HTML")
+        await cb.message.edit_text(
+            "➕ <b>افزودن منبع جدید</b>\n\n"
+            "💡 منبع = جایی که ربات ازش محتوا جمع می‌کنه.\n"
+            "نوع منبع رو انتخاب کن:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=btns), parse_mode="HTML",
+        )
     except:
-        await cb.message.answer("📡 <b>نوع منبع جدید:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns), parse_mode="HTML")
-    await state.set_state(W.src_type)
+        await cb.message.answer(
+            "➕ <b>افزودن منبع جدید</b>\n\nنوع منبع:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=btns), parse_mode="HTML",
+        )
+    await state.set_state(WizSrcStates.choosing_type)
 
 
-@router.callback_query(W.src_type, F.data.startswith("ws:"))
+@router.callback_query(WizSrcStates.choosing_type, F.data.startswith("ws:"))
 async def wiz_src_type(cb: CallbackQuery, state: FSMContext):
     if not cb.from_user or not await is_auth(cb.from_user.id):
         return
     stype = cb.data.split(":")[1]
-    await state.update_data(stype=stype, step=1, s1="", s2="")
-    prompt, _ = SRC_PROMPTS.get(stype, ("اطلاعات رو بفرست:", None))
+    prompt_info = SRC_PROMPTS.get(stype)
+    if not prompt_info:
+        await safe_answer(cb, "❌", True)
+        return
+
+    await state.update_data(stype=stype, values={})
     try:
         await cb.answer()
     except:
         pass
+
+    text = prompt_info["step1"]
     try:
-        await cb.message.edit_text(f"📝 {prompt}", reply_markup=cancel_kb())
+        await cb.message.edit_text(text, reply_markup=cancel_kb(), parse_mode="HTML")
     except:
-        await cb.message.answer(f"📝 {prompt}", reply_markup=cancel_kb())
-    await state.set_state(W.src_1)
+        await cb.message.answer(text, reply_markup=cancel_kb(), parse_mode="HTML")
+    await state.set_state(WizSrcStates.step1)
 
 
-@router.message(W.src_1, F.text & ~F.text.startswith("/"))
-async def wiz_src_1(msg: Message, state: FSMContext):
+@router.message(WizSrcStates.step1, F.text & ~F.text.startswith("/"))
+async def wiz_src_step1(msg: Message, state: FSMContext):
     if not msg.from_user or not await is_auth(msg.from_user.id):
         return
     val = (msg.text or "").strip()
     if not val:
         await msg.answer("❌ خالیه!", reply_markup=cancel_kb())
         return
+
     data = await state.get_data()
     stype = data.get("stype", "rss")
-    await state.update_data(s1=val)
+    values = data.get("values", {})
+    prompt_info = SRC_PROMPTS.get(stype, {})
 
-    _, prompt2 = SRC_PROMPTS.get(stype, (None, None))
-    if prompt2:
-        defaults = SRC_DEFAULTS.get(stype, ())
-        hint = f"\n(پیش‌فرض: {defaults[0]})" if defaults else ""
-        await msg.answer(f"📝 {prompt2}{hint}", reply_markup=cancel_kb())
-        await state.set_state(W.src_2)
+    if "step2" in prompt_info:
+        keys = prompt_info.get("keys", [])
+        if keys:
+            values[keys[0]] = val
+        await state.update_data(values=values)
+
+        step2_text = prompt_info["step2"]
+        defaults = prompt_info.get("defaults", {})
+        if defaults:
+            first_default_key = list(defaults.keys())[0]
+            step2_text += f"\n\n💡 پیش‌فرض: <code>{defaults[first_default_key]}</code>"
+
+        await msg.answer(step2_text, reply_markup=cancel_kb(), parse_mode="HTML")
+        await state.set_state(WizSrcStates.step2)
     else:
-        await msg.answer("📝 اسم این منبع رو بفرست:", reply_markup=cancel_kb())
-        await state.set_state(W.src_name)
+        single_key = prompt_info.get("key", "url")
+        values[single_key] = val
+        await state.update_data(values=values)
+
+        type_labels = {
+            "rss": "وبلاگ OpenAI",
+            "telegram": "کانال AI فارسی",
+            "twitter": "OpenAI",
+            "reddit": "MachineLearning",
+        }
+        hint = type_labels.get(stype, "منبع من")
+        await msg.answer(f"📝 یه اسم برای این منبع بذار:\n\nمثال: <code>{hint}</code>", reply_markup=cancel_kb(), parse_mode="HTML")
+        await state.set_state(WizSrcStates.name)
 
 
-@router.message(W.src_2, F.text & ~F.text.startswith("/"))
-async def wiz_src_2(msg: Message, state: FSMContext):
+@router.message(WizSrcStates.step2, F.text & ~F.text.startswith("/"))
+async def wiz_src_step2(msg: Message, state: FSMContext):
     if not msg.from_user or not await is_auth(msg.from_user.id):
         return
     val = (msg.text or "").strip()
-    if not val:
-        data = await state.get_data()
-        stype = data.get("stype", "rss")
-        defaults = SRC_DEFAULTS.get(stype, ())
-        val = defaults[0] if defaults else ""
-    await state.update_data(s2=val)
-    await msg.answer("📝 اسم این منبع رو بفرست:", reply_markup=cancel_kb())
-    await state.set_state(W.src_name)
+    data = await state.get_data()
+    stype = data.get("stype", "rss")
+    values = data.get("values", {})
+    prompt_info = SRC_PROMPTS.get(stype, {})
+    defaults = prompt_info.get("defaults", {})
+    keys = prompt_info.get("keys", [])
+
+    if len(keys) >= 2:
+        second_key = keys[1]
+        if val.lower() == "skip" or not val:
+            values[second_key] = defaults.get(second_key, "")
+        else:
+            values[second_key] = val
+
+    await state.update_data(values=values)
+
+    name_hints = {
+        "website": values.get("url", "وبسایت").replace("https://", "").replace("http://", "").split("/")[0],
+        "github": f"GitHub {values.get('language', 'all')}",
+        "hackernews": f"HN: {values.get('keywords', 'AI')[:20]}",
+        "arxiv": f"arXiv: {values.get('query', 'AI')[:20]}",
+    }
+    hint = name_hints.get(stype, "منبع من")
+
+    await msg.answer(f"📝 یه اسم برای این منبع بذار:\n\nمثال: <code>{hint}</code>", reply_markup=cancel_kb(), parse_mode="HTML")
+    await state.set_state(WizSrcStates.name)
 
 
-@router.message(W.src_name, F.text & ~F.text.startswith("/"))
+@router.message(WizSrcStates.name, F.text & ~F.text.startswith("/"))
 async def wiz_src_name(msg: Message, state: FSMContext):
     if not msg.from_user or not await is_auth(msg.from_user.id):
         return
@@ -216,29 +289,26 @@ async def wiz_src_name(msg: Message, state: FSMContext):
     if not name:
         await msg.answer("❌ اسم بفرست.", reply_markup=cancel_kb())
         return
+
     data = await state.get_data()
     stype = data.get("stype", "rss")
-    s1 = data.get("s1", "")
-    s2 = data.get("s2", "")
+    values = data.get("values", {})
 
     config = {}
-    if stype == "rss":
-        config = {"url": s1}
-    elif stype == "telegram":
-        config = {"channel": s1}
-    elif stype == "twitter":
-        config = {"username": s1}
-    elif stype == "reddit":
-        config = {"subreddit": s1}
-    elif stype == "website":
-        config = {"url": s1, "selector": s2 or "article"}
-    elif stype == "github":
-        config = {"language": s1, "since": s2 or "daily"}
-    elif stype == "hackernews":
-        mx = int(s2) if s2 and s2.isdigit() else 30
-        config = {"keywords": s1, "max_items": mx}
-    elif stype == "arxiv":
-        config = {"query": s1, "keywords": s2 or "LLM,prompt", "max_results": 20}
+    prompt_info = SRC_PROMPTS.get(stype, {})
+    if "keys" in prompt_info:
+        for k in prompt_info["keys"]:
+            config[k] = values.get(k, prompt_info.get("defaults", {}).get(k, ""))
+    else:
+        single_key = prompt_info.get("key", "url")
+        config[single_key] = values.get(single_key, "")
+
+    # Convert max_items to int if present
+    if "max_items" in config:
+        try:
+            config["max_items"] = int(config["max_items"])
+        except:
+            config["max_items"] = 30
 
     async with async_session_factory() as s:
         s.add(Source(name=name, type=stype, config_json=json.dumps(config, ensure_ascii=False), is_active=True))
@@ -246,57 +316,26 @@ async def wiz_src_name(msg: Message, state: FSMContext):
 
     await _log(msg.from_user.id, "add_source", f"{name} ({stype})")
     await state.clear()
+
     em = SRC_TYPES.get(stype, "📁")
+    cfg_str = json.dumps(config, ensure_ascii=False, indent=2)
     await msg.answer(
-        f"✅ منبع اضافه شد!\n\n📝 {name}\n📡 {em}\n⚙️ <code>{json.dumps(config, ensure_ascii=False)}</code>",
+        f"✅ <b>منبع اضافه شد!</b>\n\n"
+        f"📝 نام: {name}\n"
+        f"📡 نوع: {em}\n"
+        f"⚙️ تنظیمات:\n<code>{cfg_str}</code>\n\n"
+        f"منبع فعاله و توی کراول بعدی بررسی میشه.",
         reply_markup=done_kb(), parse_mode="HTML",
     )
 
 
-# ── SOURCE DELETE ──
-
-@router.callback_query(F.data == "wiz:src_del")
-async def wiz_src_del(cb: CallbackQuery, state: FSMContext):
-    if not cb.from_user or not await is_auth(cb.from_user.id):
-        return
-    try:
-        await cb.answer()
-    except:
-        pass
-    try:
-        await cb.message.edit_text("🗑️ شناسه (ID) منبع:", reply_markup=cancel_kb())
-    except:
-        await cb.message.answer("🗑️ شناسه (ID) منبع:", reply_markup=cancel_kb())
-    await state.set_state(W.src_del)
-
-
-@router.message(W.src_del, F.text & ~F.text.startswith("/"))
-async def wiz_src_del_input(msg: Message, state: FSMContext):
-    if not msg.from_user or not await is_auth(msg.from_user.id):
-        return
-    try:
-        sid = int((msg.text or "").strip())
-    except:
-        await msg.answer("❌ عدد بفرست.", reply_markup=cancel_kb())
-        return
-    async with async_session_factory() as s:
-        r = await s.execute(select(Source).where(Source.id == sid))
-        src = r.scalar_one_or_none()
-        if not src:
-            await msg.answer(f"❌ منبع {sid} نیست.", reply_markup=done_kb())
-            await state.clear()
-            return
-        n = src.name
-        await s.delete(src)
-        await s.commit()
-    await _log(msg.from_user.id, "delete_source", f"{n} ({sid})")
-    await state.clear()
-    await msg.answer(f"✅ «{n}» حذف شد.", reply_markup=done_kb())
-
-
-# ══════════════════════════════════════════
+# ══════════════════════════════════════════════
 # KEYWORDS
-# ══════════════════════════════════════════
+# ══════════════════════════════════════════════
+
+class WizKWStates(StatesGroup):
+    input = State()
+
 
 @router.callback_query(F.data == "wiz:kw_pos")
 async def wiz_kw_pos(cb: CallbackQuery, state: FSMContext):
@@ -308,10 +347,17 @@ async def wiz_kw_pos(cb: CallbackQuery, state: FSMContext):
     except:
         pass
     try:
-        await cb.message.edit_text("➕ کلمات مثبت (با کاما):\nمثال: AI, LLM, ChatGPT", reply_markup=cancel_kb())
+        await cb.message.edit_text(
+            "➕ <b>کلمات مثبت</b>\n\n"
+            "💡 مطالب باید حداقل یکی از این کلمات رو داشته باشن تا جمع بشن.\n"
+            "اگه کلمه‌ای تنظیم نکنی، همه مطالب جمع میشن.\n\n"
+            "کلمات رو با کاما جدا کن:\n"
+            "<code>AI, LLM, ChatGPT, prompt</code>",
+            reply_markup=cancel_kb(), parse_mode="HTML",
+        )
     except:
-        await cb.message.answer("➕ کلمات مثبت (با کاما):\nمثال: AI, LLM, ChatGPT", reply_markup=cancel_kb())
-    await state.set_state(W.kw_input)
+        await cb.message.answer("➕ کلمات مثبت (با کاما):\n<code>AI, LLM, ChatGPT</code>", reply_markup=cancel_kb(), parse_mode="HTML")
+    await state.set_state(WizKWStates.input)
 
 
 @router.callback_query(F.data == "wiz:kw_neg")
@@ -324,13 +370,19 @@ async def wiz_kw_neg(cb: CallbackQuery, state: FSMContext):
     except:
         pass
     try:
-        await cb.message.edit_text("➖ کلمات منفی/مسدود (با کاما):\nمثال: bitcoin, crypto", reply_markup=cancel_kb())
+        await cb.message.edit_text(
+            "➖ <b>کلمات منفی (مسدود)</b>\n\n"
+            "💡 مطالبی که این کلمات رو داشته باشن رد میشن و جمع نمیشن.\n\n"
+            "کلمات رو با کاما جدا کن:\n"
+            "<code>bitcoin, crypto, NFT</code>",
+            reply_markup=cancel_kb(), parse_mode="HTML",
+        )
     except:
-        await cb.message.answer("➖ کلمات منفی/مسدود (با کاما):\nمثال: bitcoin, crypto", reply_markup=cancel_kb())
-    await state.set_state(W.kw_input)
+        await cb.message.answer("➖ کلمات منفی (با کاما):\n<code>bitcoin, crypto</code>", reply_markup=cancel_kb(), parse_mode="HTML")
+    await state.set_state(WizKWStates.input)
 
 
-@router.message(W.kw_input, F.text & ~F.text.startswith("/"))
+@router.message(WizKWStates.input, F.text & ~F.text.startswith("/"))
 async def wiz_kw_input(msg: Message, state: FSMContext):
     if not msg.from_user or not await is_auth(msg.from_user.id):
         return
@@ -338,7 +390,7 @@ async def wiz_kw_input(msg: Message, state: FSMContext):
     neg = data.get("neg", False)
     words = [w.strip() for w in (msg.text or "").split(",") if w.strip()]
     if not words:
-        await msg.answer("❌ حداقل یه کلمه.", reply_markup=cancel_kb())
+        await msg.answer("❌ حداقل یه کلمه بفرست.", reply_markup=cancel_kb())
         return
     async with async_session_factory() as s:
         for w in words:
@@ -347,50 +399,16 @@ async def wiz_kw_input(msg: Message, state: FSMContext):
     await _log(msg.from_user.id, "add_keyword", f"{'neg' if neg else 'pos'}: {', '.join(words)}")
     await state.clear()
     kind = "منفی 🚫" if neg else "مثبت ✅"
-    await msg.answer(f"✅ کلمات {kind}:\n" + "\n".join(f"• {w}" for w in words), reply_markup=done_kb())
+    await msg.answer(f"✅ کلمات {kind} اضافه شد:\n" + "\n".join(f"• {w}" for w in words), reply_markup=done_kb())
 
 
-@router.callback_query(F.data == "wiz:kw_del")
-async def wiz_kw_del(cb: CallbackQuery, state: FSMContext):
-    if not cb.from_user or not await is_auth(cb.from_user.id):
-        return
-    try:
-        await cb.answer()
-    except:
-        pass
-    try:
-        await cb.message.edit_text("🗑️ ID کلمه:", reply_markup=cancel_kb())
-    except:
-        await cb.message.answer("🗑️ ID کلمه:", reply_markup=cancel_kb())
-    await state.set_state(W.kw_del)
-
-
-@router.message(W.kw_del, F.text & ~F.text.startswith("/"))
-async def wiz_kw_del_input(msg: Message, state: FSMContext):
-    if not msg.from_user or not await is_auth(msg.from_user.id):
-        return
-    try:
-        kid = int((msg.text or "").strip())
-    except:
-        await msg.answer("❌ عدد.", reply_markup=cancel_kb())
-        return
-    async with async_session_factory() as s:
-        r = await s.execute(select(Keyword).where(Keyword.id == kid))
-        kw = r.scalar_one_or_none()
-        if not kw:
-            await msg.answer(f"❌ ID {kid} نیست.", reply_markup=done_kb())
-            await state.clear()
-            return
-        w = kw.word
-        await s.delete(kw)
-        await s.commit()
-    await state.clear()
-    await msg.answer(f"✅ «{w}» حذف شد.", reply_markup=done_kb())
-
-
-# ══════════════════════════════════════════
+# ══════════════════════════════════════════════
 # HASHTAGS
-# ══════════════════════════════════════════
+# ══════════════════════════════════════════════
+
+class WizHTStates(StatesGroup):
+    input = State()
+
 
 @router.callback_query(F.data == "wiz:ht_add")
 async def wiz_ht_add(cb: CallbackQuery, state: FSMContext):
@@ -401,13 +419,19 @@ async def wiz_ht_add(cb: CallbackQuery, state: FSMContext):
     except:
         pass
     try:
-        await cb.message.edit_text("➕ هشتگ‌ها (با کاما، بدون #):\nمثال: ChatGPT, AItools, PromptEngineering", reply_markup=cancel_kb())
+        await cb.message.edit_text(
+            "➕ <b>افزودن هشتگ</b>\n\n"
+            "💡 هشتگ‌ها توی پیام‌های ارسالی استفاده میشن.\n\n"
+            "هشتگ‌ها رو با کاما جدا کن (بدون #):\n"
+            "<code>ChatGPT, AItools, PromptEngineering</code>",
+            reply_markup=cancel_kb(), parse_mode="HTML",
+        )
     except:
-        await cb.message.answer("➕ هشتگ‌ها (با کاما، بدون #):\nمثال: ChatGPT, AItools, PromptEngineering", reply_markup=cancel_kb())
-    await state.set_state(W.ht_input)
+        await cb.message.answer("➕ هشتگ‌ها (با کاما، بدون #):", reply_markup=cancel_kb())
+    await state.set_state(WizHTStates.input)
 
 
-@router.message(W.ht_input, F.text & ~F.text.startswith("/"))
+@router.message(WizHTStates.input, F.text & ~F.text.startswith("/"))
 async def wiz_ht_input(msg: Message, state: FSMContext):
     if not msg.from_user or not await is_auth(msg.from_user.id):
         return
@@ -417,61 +441,33 @@ async def wiz_ht_input(msg: Message, state: FSMContext):
         return
     async with async_session_factory() as s:
         added = []
+        dupes = []
         for t in tags:
             ex = await s.execute(select(Hashtag).where(Hashtag.tag == t))
             if ex.scalar_one_or_none():
+                dupes.append(t)
                 continue
             s.add(Hashtag(tag=t))
             added.append(t)
         await s.commit()
     await state.clear()
+    lines = []
     if added:
-        await msg.answer("✅ اضافه شد:\n" + "\n".join(f"#{t}" for t in added), reply_markup=done_kb())
-    else:
-        await msg.answer("⚠️ همه قبلاً بودن.", reply_markup=done_kb())
+        lines.append("✅ اضافه شد:")
+        lines.extend(f"  #{t}" for t in added)
+    if dupes:
+        lines.append("⚠️ قبلاً بودن:")
+        lines.extend(f"  #{t}" for t in dupes)
+    await msg.answer("\n".join(lines), reply_markup=done_kb())
 
 
-@router.callback_query(F.data == "wiz:ht_del")
-async def wiz_ht_del(cb: CallbackQuery, state: FSMContext):
-    if not cb.from_user or not await is_auth(cb.from_user.id):
-        return
-    try:
-        await cb.answer()
-    except:
-        pass
-    try:
-        await cb.message.edit_text("🗑️ ID هشتگ:", reply_markup=cancel_kb())
-    except:
-        await cb.message.answer("🗑️ ID هشتگ:", reply_markup=cancel_kb())
-    await state.set_state(W.ht_del)
-
-
-@router.message(W.ht_del, F.text & ~F.text.startswith("/"))
-async def wiz_ht_del_input(msg: Message, state: FSMContext):
-    if not msg.from_user or not await is_auth(msg.from_user.id):
-        return
-    try:
-        hid = int((msg.text or "").strip())
-    except:
-        await msg.answer("❌ عدد.", reply_markup=cancel_kb())
-        return
-    async with async_session_factory() as s:
-        r = await s.execute(select(Hashtag).where(Hashtag.id == hid))
-        ht = r.scalar_one_or_none()
-        if not ht:
-            await msg.answer(f"❌ ID {hid} نیست.", reply_markup=done_kb())
-            await state.clear()
-            return
-        t = ht.tag
-        await s.delete(ht)
-        await s.commit()
-    await state.clear()
-    await msg.answer(f"✅ #{t} حذف شد.", reply_markup=done_kb())
-
-
-# ══════════════════════════════════════════
+# ══════════════════════════════════════════════
 # RECEIVERS
-# ══════════════════════════════════════════
+# ══════════════════════════════════════════════
+
+class WizRCStates(StatesGroup):
+    input = State()
+
 
 @router.callback_query(F.data == "wiz:rc_add")
 async def wiz_rc_add(cb: CallbackQuery, state: FSMContext):
@@ -483,18 +479,22 @@ async def wiz_rc_add(cb: CallbackQuery, state: FSMContext):
         pass
     try:
         await cb.message.edit_text(
-            "➕ Chat ID (با کاما):\n<code>123456789, -1001234567890</code>\n\n💡 برای کانال: پیام رو به @userinfobot فوروارد کن.",
+            "➕ <b>افزودن دریافت‌کننده</b>\n\n"
+            "💡 Chat ID عددی که پیام‌ها بهش ارسال میشه.\n\n"
+            "📌 <b>Chat ID خودت:</b>\n"
+            "به @userinfobot پیام بده، عددی که میده همونه.\n\n"
+            "📌 <b>Chat ID کانال:</b>\n"
+            "یه پیام از کانالت رو به @userinfobot فوروارد کن.\n\n"
+            "می‌تونی چندتا رو با کاما جدا کنی:\n"
+            "<code>123456789, -1001234567890</code>",
             reply_markup=cancel_kb(), parse_mode="HTML",
         )
     except:
-        await cb.message.answer(
-            "➕ Chat ID (با کاما):\n<code>123456789, -1001234567890</code>",
-            reply_markup=cancel_kb(), parse_mode="HTML",
-        )
-    await state.set_state(W.rc_input)
+        await cb.message.answer("➕ Chat ID:", reply_markup=cancel_kb())
+    await state.set_state(WizRCStates.input)
 
 
-@router.message(W.rc_input, F.text & ~F.text.startswith("/"))
+@router.message(WizRCStates.input, F.text & ~F.text.startswith("/"))
 async def wiz_rc_input(msg: Message, state: FSMContext):
     if not msg.from_user or not await is_auth(msg.from_user.id):
         return
@@ -503,17 +503,22 @@ async def wiz_rc_input(msg: Message, state: FSMContext):
         try:
             ids.append(int(p.strip()))
         except:
-            await msg.answer(f"❌ «{p.strip()}» عدد نیست.", reply_markup=cancel_kb())
+            await msg.answer(f"❌ «{p.strip()}» عدد نیست.\n\nمثال: <code>123456789</code>", reply_markup=cancel_kb(), parse_mode="HTML")
             return
+    if not ids:
+        await msg.answer("❌ حداقل یه Chat ID.", reply_markup=cancel_kb())
+        return
     async with async_session_factory() as s:
         rv = (await s.execute(select(Setting.value).where(Setting.key == "receiver_ids"))).scalar_one_or_none()
         try:
             cur = json.loads(rv) if rv else []
         except:
             cur = []
+        added = []
         for cid in ids:
             if cid not in cur:
                 cur.append(cid)
+                added.append(cid)
         r = await s.execute(select(Setting).where(Setting.key == "receiver_ids"))
         st = r.scalar_one_or_none()
         if st:
@@ -522,12 +527,19 @@ async def wiz_rc_input(msg: Message, state: FSMContext):
             s.add(Setting(key="receiver_ids", value=json.dumps(cur)))
         await s.commit()
     await state.clear()
-    await msg.answer(f"✅ {len(ids)} اضافه شد. کل: {len(cur)}", reply_markup=done_kb())
+    if added:
+        await msg.answer(f"✅ {len(added)} اضافه شد.\nکل دریافت‌کنندگان: {len(cur)}", reply_markup=done_kb())
+    else:
+        await msg.answer(f"⚠️ همه قبلاً بودن.\nکل: {len(cur)}", reply_markup=done_kb())
 
 
-# ══════════════════════════════════════════
+# ══════════════════════════════════════════════
 # ADMINS
-# ══════════════════════════════════════════
+# ══════════════════════════════════════════════
+
+class WizADMStates(StatesGroup):
+    input = State()
+
 
 @router.callback_query(F.data == "wiz:adm_add")
 async def wiz_adm_add(cb: CallbackQuery, state: FSMContext):
@@ -538,77 +550,48 @@ async def wiz_adm_add(cb: CallbackQuery, state: FSMContext):
     except:
         pass
     try:
-        await cb.message.edit_text("➕ آیدی عددی مدیر:", reply_markup=cancel_kb())
+        await cb.message.edit_text(
+            "➕ <b>افزودن مدیر</b>\n\n"
+            "💡 آیدی عددی تلگرام شخص رو بفرست.\n"
+            "برای پیدا کردن: به @userinfobot پیام بده.\n\n"
+            "مثال: <code>987654321</code>",
+            reply_markup=cancel_kb(), parse_mode="HTML",
+        )
     except:
         await cb.message.answer("➕ آیدی عددی مدیر:", reply_markup=cancel_kb())
-    await state.set_state(W.adm_input)
+    await state.set_state(WizADMStates.input)
 
 
-@router.message(W.adm_input, F.text & ~F.text.startswith("/"))
+@router.message(WizADMStates.input, F.text & ~F.text.startswith("/"))
 async def wiz_adm_input(msg: Message, state: FSMContext):
     if not msg.from_user or msg.from_user.id != settings.super_admin_id:
         return
     try:
         tid = int((msg.text or "").strip())
     except:
-        await msg.answer("❌ عدد.", reply_markup=cancel_kb())
+        await msg.answer("❌ عدد بفرست.\n\nمثال: <code>987654321</code>", reply_markup=cancel_kb(), parse_mode="HTML")
         return
     async with async_session_factory() as s:
         ex = await s.execute(select(User).where(User.telegram_id == tid))
         if ex.scalar_one_or_none():
-            await msg.answer("⚠️ قبلاً مدیره.", reply_markup=done_kb())
+            await msg.answer("⚠️ این شخص قبلاً مدیره.", reply_markup=done_kb())
             await state.clear()
             return
         s.add(User(telegram_id=tid, is_super_admin=False))
         await s.commit()
     await state.clear()
-    await msg.answer(f"✅ مدیر: <code>{tid}</code>", reply_markup=done_kb(), parse_mode="HTML")
+    await msg.answer(f"✅ مدیر جدید اضافه شد: <code>{tid}</code>\n\nاین شخص الان می‌تونه /start بزنه و پنل رو ببینه.", reply_markup=done_kb(), parse_mode="HTML")
 
 
-@router.callback_query(F.data == "wiz:adm_del")
-async def wiz_adm_del(cb: CallbackQuery, state: FSMContext):
-    if not cb.from_user or cb.from_user.id != settings.super_admin_id:
-        return
-    try:
-        await cb.answer()
-    except:
-        pass
-    try:
-        await cb.message.edit_text("🗑️ شناسه (DB ID) مدیر:", reply_markup=cancel_kb())
-    except:
-        await cb.message.answer("🗑️ شناسه (DB ID) مدیر:", reply_markup=cancel_kb())
-    await state.set_state(W.adm_del)
+# ══════════════════════════════════════════════
+# SCHEDULE SETTINGS
+# ══════════════════════════════════════════════
 
+class WizSCHStates(StatesGroup):
+    time = State()
+    count = State()
+    score = State()
 
-@router.message(W.adm_del, F.text & ~F.text.startswith("/"))
-async def wiz_adm_del_input(msg: Message, state: FSMContext):
-    if not msg.from_user or msg.from_user.id != settings.super_admin_id:
-        return
-    try:
-        aid = int((msg.text or "").strip())
-    except:
-        await msg.answer("❌ عدد.", reply_markup=cancel_kb())
-        return
-    async with async_session_factory() as s:
-        r = await s.execute(select(User).where(User.id == aid))
-        a = r.scalar_one_or_none()
-        if not a:
-            await msg.answer(f"❌ ID {aid} نیست.", reply_markup=done_kb())
-            await state.clear()
-            return
-        if a.is_super_admin:
-            await msg.answer("⛔ سوپرادمین!", reply_markup=done_kb())
-            await state.clear()
-            return
-        await s.delete(a)
-        await s.commit()
-    await state.clear()
-    await msg.answer("✅ مدیر حذف شد.", reply_markup=done_kb())
-
-
-# ══════════════════════════════════════════
-# SCHEDULE
-# ══════════════════════════════════════════
 
 async def _set_setting(key, val):
     async with async_session_factory() as s:
@@ -630,13 +613,21 @@ async def wiz_time(cb: CallbackQuery, state: FSMContext):
     except:
         pass
     try:
-        await cb.message.edit_text("🕐 ساعت:\nمثال: <code>09:00</code> یا <code>0:00</code>", reply_markup=cancel_kb(), parse_mode="HTML")
+        await cb.message.edit_text(
+            "🕐 <b>تنظیم ساعت ارسال خلاصه</b>\n\n"
+            "💡 هر روز ساعتی که تنظیم کنی، خلاصه بهترین مطالب برات ارسال میشه.\n\n"
+            "ساعت رو بفرست:\n"
+            "<code>09:00</code> - ساعت ۹ صبح\n"
+            "<code>0:00</code> - نیمه‌شب\n"
+            "<code>18:30</code> - ساعت ۶:۳۰ عصر",
+            reply_markup=cancel_kb(), parse_mode="HTML",
+        )
     except:
-        await cb.message.answer("🕐 ساعت:\nمثال: <code>09:00</code>", reply_markup=cancel_kb(), parse_mode="HTML")
-    await state.set_state(W.sch_time)
+        await cb.message.answer("🕐 ساعت:", reply_markup=cancel_kb())
+    await state.set_state(WizSCHStates.time)
 
 
-@router.message(W.sch_time, F.text & ~F.text.startswith("/"))
+@router.message(WizSCHStates.time, F.text & ~F.text.startswith("/"))
 async def wiz_time_input(msg: Message, state: FSMContext):
     if not msg.from_user or not await is_auth(msg.from_user.id):
         return
@@ -645,7 +636,7 @@ async def wiz_time_input(msg: Message, state: FSMContext):
         h, m = int(parts[0]), int(parts[1])
         assert 0 <= h <= 23 and 0 <= m <= 59
     except:
-        await msg.answer("❌ فرمت: 09:00", reply_markup=cancel_kb())
+        await msg.answer("❌ فرمت نامعتبر.\nمثال: <code>09:00</code>", reply_markup=cancel_kb(), parse_mode="HTML")
         return
     await _set_setting("digest_hour", str(h))
     await _set_setting("digest_minute", str(m))
@@ -656,7 +647,7 @@ async def wiz_time_input(msg: Message, state: FSMContext):
     except:
         pass
     await state.clear()
-    await msg.answer(f"✅ ساعت ارسال: {h}:{m:02d}", reply_markup=done_kb())
+    await msg.answer(f"✅ ساعت ارسال خلاصه: <b>{h}:{m:02d}</b>\n\nربات هر روز این ساعت خلاصه برات میفرسته.", reply_markup=done_kb(), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "wiz:count")
@@ -668,13 +659,19 @@ async def wiz_count(cb: CallbackQuery, state: FSMContext):
     except:
         pass
     try:
-        await cb.message.edit_text("📊 حداکثر مطالب:\nمثال: <code>15</code>", reply_markup=cancel_kb(), parse_mode="HTML")
+        await cb.message.edit_text(
+            "📊 <b>حداکثر مطالب در خلاصه</b>\n\n"
+            "💡 هر روز چند تا از بهترین مطالب توی خلاصه باشه.\n\n"
+            "عدد رو بفرست (۱ تا ۵۰):\n"
+            "<code>10</code>",
+            reply_markup=cancel_kb(), parse_mode="HTML",
+        )
     except:
-        await cb.message.answer("📊 حداکثر مطالب:\nمثال: <code>15</code>", reply_markup=cancel_kb(), parse_mode="HTML")
-    await state.set_state(W.sch_count)
+        await cb.message.answer("📊 تعداد:", reply_markup=cancel_kb())
+    await state.set_state(WizSCHStates.count)
 
 
-@router.message(W.sch_count, F.text & ~F.text.startswith("/"))
+@router.message(WizSCHStates.count, F.text & ~F.text.startswith("/"))
 async def wiz_count_input(msg: Message, state: FSMContext):
     if not msg.from_user or not await is_auth(msg.from_user.id):
         return
@@ -682,11 +679,11 @@ async def wiz_count_input(msg: Message, state: FSMContext):
         n = int((msg.text or "").strip())
         assert 1 <= n <= 50
     except:
-        await msg.answer("❌ عدد 1-50.", reply_markup=cancel_kb())
+        await msg.answer("❌ عدد ۱ تا ۵۰.", reply_markup=cancel_kb())
         return
     await _set_setting("digest_max_items", str(n))
     await state.clear()
-    await msg.answer(f"✅ حداکثر: {n}", reply_markup=done_kb())
+    await msg.answer(f"✅ حداکثر مطالب: <b>{n}</b>", reply_markup=done_kb(), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "wiz:score")
@@ -698,21 +695,32 @@ async def wiz_score(cb: CallbackQuery, state: FSMContext):
     except:
         pass
     try:
-        await cb.message.edit_text("⭐ حداقل امتیاز (0=غیرفعال):\nمثال: <code>7</code>", reply_markup=cancel_kb(), parse_mode="HTML")
+        await cb.message.edit_text(
+            "⭐ <b>حداقل امتیاز مطالب</b>\n\n"
+            "💡 فقط مطالبی که امتیاز بالاتر از این عدد داشته باشن ارسال میشن.\n"
+            "امتیاز توسط AI بین ۰ تا ۱۰ داده میشه.\n\n"
+            "عدد رو بفرست:\n"
+            "<code>7</code> - فقط مطالب خوب\n"
+            "<code>0</code> - همه مطالب (غیرفعال)",
+            reply_markup=cancel_kb(), parse_mode="HTML",
+        )
     except:
-        await cb.message.answer("⭐ حداقل امتیاز (0=غیرفعال):\nمثال: <code>7</code>", reply_markup=cancel_kb(), parse_mode="HTML")
-    await state.set_state(W.sch_score)
+        await cb.message.answer("⭐ امتیاز:", reply_markup=cancel_kb())
+    await state.set_state(WizSCHStates.score)
 
 
-@router.message(W.sch_score, F.text & ~F.text.startswith("/"))
+@router.message(WizSCHStates.score, F.text & ~F.text.startswith("/"))
 async def wiz_score_input(msg: Message, state: FSMContext):
     if not msg.from_user or not await is_auth(msg.from_user.id):
         return
     try:
         v = float((msg.text or "").strip())
     except:
-        await msg.answer("❌ عدد.", reply_markup=cancel_kb())
+        await msg.answer("❌ عدد بفرست.", reply_markup=cancel_kb())
         return
     await _set_setting("min_score", str(v))
     await state.clear()
-    await msg.answer(f"✅ حداقل امتیاز: {v}", reply_markup=done_kb())
+    if v == 0:
+        await msg.answer("✅ فیلتر امتیاز غیرفعال شد. همه مطالب ارسال میشن.", reply_markup=done_kb())
+    else:
+        await msg.answer(f"✅ حداقل امتیاز: <b>{v}</b>\nفقط مطالب بالای {v}/10 ارسال میشن.", reply_markup=done_kb(), parse_mode="HTML")
