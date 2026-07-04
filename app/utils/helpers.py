@@ -98,5 +98,5 @@ def format_digest_html(items, title="خلاصه روزانه") -> str:
             lines.append(f"  {h(item['summary'][:200])}")
         if item.get("url"):
             lines.append(f'  🔗 <a href="{item["url"]}">لینک</a>')
-        lines.append(f"  ⭐ {item.get('score', 0)}/10\n")
+        lines.append(f"  ⭐ {item.get("score", 0)}/10\n")
     return "\n".join(lines)
