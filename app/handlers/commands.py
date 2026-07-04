@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from aiogram import Router, F
-from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import Message
 
 from app.config import settings
 from app.database import async_session_factory
@@ -24,6 +24,7 @@ async def is_auth(uid):
 @router.message(F.text == "/panel")
 async def cmd_panel(msg: Message):
     if not msg.from_user or not await is_auth(msg.from_user.id):
+        await msg.answer("⛔ دسترسی ندارید.")
         return
     from app.handlers.panel import main_kb
     await msg.answer("🤖 <b>پنل مدیریت</b>", reply_markup=main_kb(), parse_mode="HTML")
@@ -45,14 +46,3 @@ async def cmd_digest(msg: Message):
     from app.services.delivery import deliver_digest
     await deliver_digest(msg.bot)
     await msg.answer("📤 ارسال شد.")
-
-
-@router.message(F.text == "/status")
-async def cmd_status(msg: Message):
-    if not msg.from_user or not await is_auth(msg.from_user.id):
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 داشبورد", callback_data="p:status")],
-        [InlineKeyboardButton(text="🤖 پنل", callback_data="p:main")],
-    ])
-    await msg.answer("از دکمه‌ها:", reply_markup=kb)
