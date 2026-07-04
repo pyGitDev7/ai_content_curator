@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -10,7 +11,7 @@ from loguru import logger
 from sqlalchemy import select, update
 
 from app.database import async_session_factory
-from app.models.models import Source, Setting
+from app.models.models import Source
 from app.collectors import COLLECTOR_MAP
 from app.processors.pipeline import process_single_item
 from app.config import settings
@@ -18,8 +19,51 @@ from app.config import settings
 scheduler = AsyncIOScheduler(timezone="UTC")
 
 
+async def _collect_one_source(source) -> int:
+    try:
+        collector_cls = COLLECTOR_MAP.get(source.type)
+        if not collector_cls:
+            return 0
+        config = json.loads(source.config_json) if source.config_json else {}
+        collector = collector_cls(config)
+        raw_items = await collector.safe_collect()
+
+        new_count = 0
+        for raw in raw_items:
+            try:
+                async with async_session_factory() as session:
+                    item = await process_single_item(
+                        session=session, source=source,
+                        title=raw.title, raw_text=raw.text,
+                        url=raw.url, html=raw.html, published_at=raw.published_at,
+                    )
+                    if item:
+                        new_count += 1
+                        if item.score >= 9.0:
+                            from app.main import get_bot_instance
+                            bot = get_bot_instance()
+                            if bot:
+                                from app.services.delivery import deliver_urgent
+                                await deliver_urgent(bot, item)
+                    await session.commit()
+            except Exception as e:
+                logger.error(f"Process item [{source.name}]: {e}")
+
+        async with async_session_factory() as session:
+            await session.execute(
+                update(Source).where(Source.id == source.id).values(last_fetch_at=datetime.now(timezone.utc))
+            )
+            await session.commit()
+
+        logger.info(f"[{source.name}]: {new_count} new / {len(raw_items)} fetched")
+        return new_count
+    except Exception as e:
+        logger.error(f"Source [{source.name}] error: {e}")
+        return 0
+
+
 async def _run_collectors() -> None:
-    logger.info("═══ Collection cycle START ═══")
+    logger.info("═══ Collection START ═══")
     try:
         async with async_session_factory() as session:
             result = await session.execute(select(Source).where(Source.is_active == True))
@@ -29,51 +73,20 @@ async def _run_collectors() -> None:
             logger.warning("No active sources!")
             return
 
-        total_new = 0
-        for source in sources:
-            try:
-                collector_cls = COLLECTOR_MAP.get(source.type)
-                if not collector_cls:
-                    continue
-                config = json.loads(source.config_json) if source.config_json else {}
-                collector = collector_cls(config)
-                raw_items = await collector.safe_collect()
+        sem = asyncio.Semaphore(5)
 
-                new_count = 0
-                for raw in raw_items:
-                    try:
-                        async with async_session_factory() as session:
-                            item = await process_single_item(
-                                session=session, source=source,
-                                title=raw.title, raw_text=raw.text,
-                                url=raw.url, html=raw.html, published_at=raw.published_at,
-                            )
-                            if item:
-                                new_count += 1
-                                if item.score >= 9.0:
-                                    from app.main import get_bot_instance
-                                    bot = get_bot_instance()
-                                    if bot:
-                                        from app.services.delivery import deliver_urgent
-                                        await deliver_urgent(bot, item)
-                            await session.commit()
-                    except Exception as e:
-                        logger.error(f"Process item error: {e}")
+        async def limited(src):
+            async with sem:
+                return await _collect_one_source(src)
 
-                async with async_session_factory() as session:
-                    await session.execute(
-                        update(Source).where(Source.id == source.id).values(last_fetch_at=datetime.now(timezone.utc))
-                    )
-                    await session.commit()
+        tasks = [limited(s) for s in sources]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                total_new += new_count
-                logger.info(f"[{source.name}]: {new_count} new / {len(raw_items)} fetched")
-            except Exception as e:
-                logger.error(f"Source [{source.name}] error: {e}")
-
-        logger.info(f"═══ Collection done: {total_new} new items ═══")
+        total = sum(r for r in results if isinstance(r, int))
+        errs = sum(1 for r in results if isinstance(r, Exception))
+        logger.info(f"═══ Done: {total} new, {errs} errors ═══")
     except Exception as e:
-        logger.error(f"Collection cycle fatal error: {e}")
+        logger.error(f"Collection fatal: {e}")
 
 
 async def _run_digest() -> None:
@@ -82,9 +95,8 @@ async def _run_digest() -> None:
         from app.main import get_bot_instance
         bot = get_bot_instance()
         if not bot:
-            logger.error("Bot instance not available!")
+            logger.error("Bot not available!")
             return
-
         from app.services.delivery import deliver_digest
         await deliver_digest(bot)
     except Exception as e:
