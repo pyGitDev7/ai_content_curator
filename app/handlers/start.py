@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from aiogram import Router
-from aiogram.types import Message
+from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import CommandStart
 from loguru import logger
 
@@ -31,13 +31,25 @@ async def cmd_start(message: Message) -> None:
             session.add(user)
             await session.commit()
 
-    if uid == settings.super_admin_id or user is not None:
-        from app.handlers.panel import main_kb
+    is_admin = (uid == settings.super_admin_id) or (user is not None)
+
+    if is_admin:
+        name = message.from_user.first_name or "ادمین"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🤖 پنل مدیریت", callback_data="p:main")],
+        ])
         await message.answer(
-            "🤖 <b>پنل مدیریت ربات کیوریتور AI</b>\n\nاز منوی زیر انتخاب کنید:",
-            reply_markup=main_kb(),
+            f"سلام <b>{name}</b> 👋\n\n"
+            f"من ربات کیوریتور هوش مصنوعی هستم.\n"
+            f"از دکمه زیر به پنل مدیریت برو:\n\n"
+            f"📌 همچنین می‌تونی از <code>/panel</code> استفاده کنی.",
+            reply_markup=kb,
             parse_mode="HTML",
         )
     else:
-        await message.answer("⛔ دسترسی ندارید.")
-        logger.warning(f"Unauthorized: {uid}")
+        await message.answer(
+            "سلام! 👋\n\nمن یه ربات کیوریتور هوش مصنوعی هستم.\n"
+            "به این ربات دسترسی ندارید.\n\n"
+            "برای دسترسی، آیدی شما باید توسط مدیر ثبت شود.",
+        )
+        logger.warning(f"Unauthorized /start: {uid}")
