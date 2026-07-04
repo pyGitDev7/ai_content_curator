@@ -46,13 +46,11 @@ async def main() -> None:
     _bot_instance = bot
     dp = Dispatcher(storage=MemoryStorage())
 
-    # Import routers
     from app.handlers.wizard import router as r_wizard
     from app.handlers.panel import router as r_panel
     from app.handlers.commands import router as r_commands
     from app.handlers.start import router as r_start
 
-    # ORDER MATTERS: wizard first (FSM priority)
     dp.include_router(r_wizard)
     dp.include_router(r_panel)
     dp.include_router(r_commands)
@@ -71,13 +69,12 @@ async def main() -> None:
     try:
         await bot.send_message(
             chat_id=settings.super_admin_id,
-            text="🤖 <b>ربات فعال شد!</b>\n\n/start یا /panel برای پنل",
+            text="🤖 <b>ربات فعال شد!</b>\n\n/start = خوش‌آمد\n/panel = پنل مدیریت",
             parse_mode="HTML",
         )
     except Exception as e:
         logger.warning(f"Notify admin failed: {e}")
 
-    # Run first collection after 30 seconds
     async def delayed_first_collect():
         await asyncio.sleep(30)
         logger.info("Running first collection...")
