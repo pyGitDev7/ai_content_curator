@@ -18,10 +18,6 @@ from app.utils.helpers import format_single_item_html, is_persian, h
 router = Router(name="panel")
 
 
-# ════════════════════════════════════════
-# HELPERS
-# ════════════════════════════════════════
-
 async def is_authorized(uid: int) -> bool:
     if uid == settings.super_admin_id:
         return True
@@ -72,20 +68,12 @@ SRC_EMOJI = {
 }
 
 
-# ════════════════════════════════════════
-# MAIN MENU
-# ════════════════════════════════════════
-
 @router.callback_query(F.data == "p:main")
 async def cb_main(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await safe_answer(callback)
     await safe_edit(callback.message, "🤖 <b>پنل مدیریت</b>\n\nاز منوی زیر انتخاب کنید:", main_kb())
 
-
-# ════════════════════════════════════════
-# STATUS
-# ════════════════════════════════════════
 
 @router.callback_query(F.data == "p:status")
 async def cb_status(callback: CallbackQuery) -> None:
@@ -120,9 +108,9 @@ async def cb_status(callback: CallbackQuery) -> None:
     await safe_edit(callback.message, txt, kb)
 
 
-# ════════════════════════════════════════
+# ═══════════════════════════
 # SOURCES
-# ════════════════════════════════════════
+# ═══════════════════════════
 
 @router.callback_query(F.data == "p:sources")
 async def cb_sources(callback: CallbackQuery) -> None:
@@ -265,70 +253,56 @@ async def cb_crawl_all(callback: CallbackQuery) -> None:
     await callback.message.answer("🚀 کراول شروع شد. ۲-۱۰ دقیقه طول می‌کشه.")
 
 
-# ════════════════════════════════════════════════════════════
-# NEWS - کامل بازنویسی شده
-# ════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════
+# NEWS - با فیلتر و ترجمه
+# ═══════════════════════════════════════════════
 
 @router.callback_query(F.data == "p:news")
 async def cb_news(callback: CallbackQuery) -> None:
     if not callback.from_user or not await is_authorized(callback.from_user.id):
         return
-
     async with async_session_factory() as s:
         rv = (await s.execute(select(Setting.value).where(Setting.key == "receiver_ids"))).scalar_one_or_none()
         try:
             rids = json.loads(rv) if rv else []
         except:
             rids = []
-
         total = (await s.execute(select(sqlfunc.count(ContentItem.id)).where(ContentItem.processed == True))).scalar() or 0
         undel = (await s.execute(select(sqlfunc.count(ContentItem.id)).where(
             ContentItem.processed == True, ContentItem.delivered == False))).scalar() or 0
-
-        # Count per time period
         now = datetime.now(timezone.utc)
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         yesterday_start = today_start - timedelta(days=1)
         week_start = today_start - timedelta(days=7)
-
-        today_count = (await s.execute(
-            select(sqlfunc.count(ContentItem.id)).where(
-                ContentItem.processed == True, ContentItem.created_at >= today_start)
-        )).scalar() or 0
-        yesterday_count = (await s.execute(
-            select(sqlfunc.count(ContentItem.id)).where(
-                ContentItem.processed == True,
-                ContentItem.created_at >= yesterday_start,
-                ContentItem.created_at < today_start)
-        )).scalar() or 0
-        week_count = (await s.execute(
-            select(sqlfunc.count(ContentItem.id)).where(
-                ContentItem.processed == True, ContentItem.created_at >= week_start)
-        )).scalar() or 0
+        today_n = (await s.execute(select(sqlfunc.count(ContentItem.id)).where(
+            ContentItem.processed == True, ContentItem.created_at >= today_start))).scalar() or 0
+        yesterday_n = (await s.execute(select(sqlfunc.count(ContentItem.id)).where(
+            ContentItem.processed == True, ContentItem.created_at >= yesterday_start, ContentItem.created_at < today_start))).scalar() or 0
+        week_n = (await s.execute(select(sqlfunc.count(ContentItem.id)).where(
+            ContentItem.processed == True, ContentItem.created_at >= week_start))).scalar() or 0
 
     txt = (
         f"📥 <b>دریافت و مشاهده اخبار</b>\n\n"
         f"📊 <b>آمار:</b>\n"
-        f"  📅 امروز: <b>{today_count}</b> مطلب\n"
-        f"  📅 دیروز: <b>{yesterday_count}</b> مطلب\n"
-        f"  📅 این هفته: <b>{week_count}</b> مطلب\n"
-        f"  📚 کل: <b>{total}</b> مطلب\n"
+        f"  📅 امروز: <b>{today_n}</b>\n"
+        f"  📅 دیروز: <b>{yesterday_n}</b>\n"
+        f"  📅 این هفته: <b>{week_n}</b>\n"
+        f"  📚 کل: <b>{total}</b>\n"
         f"  📤 آماده ارسال: <b>{undel}</b>\n"
         f"  📬 دریافت‌کنندگان: <b>{len(rids)}</b>"
     )
-
     if not rids:
-        txt += "\n\n⚠️ <b>دریافت‌کننده تنظیم نشده!</b>"
+        txt += "\n\n⚠️ دریافت‌کننده تنظیم نشده!"
     if not total:
-        txt += "\n\n💡 <b>هنوز مطلبی جمع‌آوری نشده.</b>\nاول «🔄 جمع‌آوری الان» رو بزن."
+        txt += "\n\n💡 هنوز مطلبی جمع‌آوری نشده.\n«🔄 جمع‌آوری الان» رو بزن."
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 جمع‌آوری الان", callback_data="p:fetch_now")],
         [InlineKeyboardButton(text="📤 ارسال خلاصه الان", callback_data="p:send_now")],
         [InlineKeyboardButton(text="─────────────", callback_data="p:none")],
-        [InlineKeyboardButton(text=f"📅 امروز ({today_count})", callback_data="p:nl:t:0")],
-        [InlineKeyboardButton(text=f"📅 دیروز ({yesterday_count})", callback_data="p:nl:y:0")],
-        [InlineKeyboardButton(text=f"📅 این هفته ({week_count})", callback_data="p:nl:w:0")],
+        [InlineKeyboardButton(text=f"📅 امروز ({today_n})", callback_data="p:nl:t:0")],
+        [InlineKeyboardButton(text=f"📅 دیروز ({yesterday_n})", callback_data="p:nl:y:0")],
+        [InlineKeyboardButton(text=f"📅 این هفته ({week_n})", callback_data="p:nl:w:0")],
         [InlineKeyboardButton(text=f"📋 همه مطالب ({total})", callback_data="p:nl:a:0")],
         [InlineKeyboardButton(text="📡 فقط یه منبع خاص", callback_data="p:nsrc:0")],
         [InlineKeyboardButton(text="🔙", callback_data="p:main")],
@@ -342,30 +316,20 @@ async def cb_fetch_now(callback: CallbackQuery) -> None:
     if not callback.from_user or not await is_authorized(callback.from_user.id):
         return
     await safe_answer(callback, "⏳ ...")
-
-    # Show how many active sources
     async with async_session_factory() as s:
         active = (await s.execute(select(sqlfunc.count(Source.id)).where(Source.is_active == True))).scalar() or 0
-
     if not active:
-        await callback.message.answer(
-            "❌ <b>هیچ منبع فعالی نداری!</b>\n\n"
-            "از منوی اصلی > 📡 مدیریت منابع > لیست منابع\n"
-            "منابع رو فعال کن یا منبع جدید اضافه کن.",
-            parse_mode="HTML",
-        )
+        await callback.message.answer("❌ هیچ منبع فعالی نداری! از 📡 منابع اضافه کن.")
         return
-
     from app.services.scheduler import _run_collectors
     asyncio.create_task(_run_collectors())
     await callback.message.answer(
         f"🔄 <b>جمع‌آوری شروع شد!</b>\n\n"
-        f"📡 {active} منبع فعال در حال بررسی...\n"
-        f"⏳ ۲ تا ۱۰ دقیقه طول می‌کشه.\n\n"
-        f"بعد از اتمام:\n"
-        f"• از دکمه‌های زیر مطالب رو ببین\n"
-        f"• هر مطلب دکمه ترجمه داره\n\n"
-        f"💡 صبر کن تا جمع‌آوری تموم بشه، بعد بیا مطالب رو ببین.",
+        f"📡 {active} منبع فعال\n"
+        f"⏳ ۲-۱۰ دقیقه صبر کن.\n\n"
+        f"بعدش از دکمه‌های زیر مطالب رو ببین:\n"
+        f"📅 امروز / دیروز / هفته / همه\n"
+        f"هر مطلب دکمه 🇮🇷 ترجمه داره.",
         parse_mode="HTML",
     )
 
@@ -375,7 +339,6 @@ async def cb_send_now(callback: CallbackQuery) -> None:
     if not callback.from_user or not await is_authorized(callback.from_user.id):
         return
     await safe_answer(callback, "⏳ ...")
-
     async with async_session_factory() as s:
         rv = (await s.execute(select(Setting.value).where(Setting.key == "receiver_ids"))).scalar_one_or_none()
         try:
@@ -386,38 +349,22 @@ async def cb_send_now(callback: CallbackQuery) -> None:
         undel = (await s.execute(select(sqlfunc.count(ContentItem.id)).where(
             ContentItem.processed == True, ContentItem.delivered == False, ContentItem.score >= min_score
         ))).scalar() or 0
-
     if not rids:
-        await callback.message.answer(
-            "❌ <b>ارسال نشد!</b>\n\n"
-            "هیچ دریافت‌کننده‌ای تنظیم نشده.\n"
-            "از منوی اصلی > 📬 دریافت‌کنندگان > ➕ افزودن",
-            parse_mode="HTML",
-        )
+        await callback.message.answer("❌ دریافت‌کننده تنظیم نشده!\nاز 📬 دریافت‌کنندگان > ➕ افزودن")
         return
-
     if not undel:
-        await callback.message.answer(
-            "📭 <b>مطلب جدیدی برای ارسال نیست!</b>\n\n"
-            "• قبلاً همه مطالب ارسال شدن\n"
-            "• یا هنوز مطلبی جمع‌آوری نشده\n\n"
-            "💡 اول «🔄 جمع‌آوری الان» رو بزن، بعد امتحان کن.",
-            parse_mode="HTML",
-        )
+        await callback.message.answer("📭 مطلب جدیدی برای ارسال نیست.\n\n💡 اول «🔄 جمع‌آوری» رو بزن.")
         return
-
     from app.services.delivery import deliver_digest
     await deliver_digest(callback.bot)
-    await callback.message.answer(f"📤 <b>خلاصه {undel} مطلب به {len(rids)} نفر ارسال شد.</b>", parse_mode="HTML")
+    await callback.message.answer(f"📤 خلاصه {undel} مطلب به {len(rids)} نفر ارسال شد.")
 
 
-# ── فیلتر و نمایش مطالب ──
+# ── فیلتر مطالب ──
 
-async def _send_items_list(callback: CallbackQuery, fkey: str, page: int, filter_label: str) -> None:
-    """Common function to show filtered items list with translation buttons."""
+async def _send_items_with_buttons(callback: CallbackQuery, fkey: str, page: int) -> None:
     pp = 5
     off = page * pp
-
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -444,41 +391,25 @@ async def _send_items_list(callback: CallbackQuery, fkey: str, page: int, filter
             query = query.where(ContentItem.source_id == sid)
             count_q = count_q.where(ContentItem.source_id == sid)
             sr = await s.execute(select(Source.name).where(Source.id == sid))
-            fl = f"📡 {sr.scalar_one_or_none() or 'نامشخص'}"
+            fl = f"📡 {sr.scalar_one_or_none() or '?'}"
         else:
-            fl = "📋 همه مطالب"
+            fl = "📋 همه"
 
         total = (await s.execute(count_q)).scalar() or 0
-        items = (await s.execute(
-            query.order_by(ContentItem.created_at.desc()).offset(off).limit(pp)
-        )).scalars().all()
+        items = (await s.execute(query.order_by(ContentItem.created_at.desc()).offset(off).limit(pp))).scalars().all()
 
     await safe_answer(callback)
 
     if not items:
-        await callback.message.answer(
-            f"🔍 <b>{fl}</b>\n\n"
-            f"مطلبی یافت نشد.\n\n"
-            f"💡 اگه تازه ربات رو راه‌اندازی کردی:\n"
-            f"1. برو به «📥 دریافت اخبار»\n"
-            f"2. «🔄 جمع‌آوری الان» رو بزن\n"
-            f"3. ۵ دقیقه صبر کن\n"
-            f"4. دوباره بیا اینجا",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔄 جمع‌آوری الان", callback_data="p:fetch_now")],
-                [InlineKeyboardButton(text="🔙", callback_data="p:news")],
-            ]),
-        )
+        kb_back = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 جمع‌آوری الان", callback_data="p:fetch_now")],
+            [InlineKeyboardButton(text="🔙", callback_data="p:news")],
+        ])
+        await callback.message.answer(f"🔍 <b>{fl}</b>\n\nمطلبی نیست.\n\n💡 اول «🔄 جمع‌آوری» رو بزن، ۵ دقیقه صبر کن.", parse_mode="HTML", reply_markup=kb_back)
         return
 
-    # Header
-    await callback.message.answer(
-        f"🔍 <b>{fl}</b> — {total} مطلب (صفحه {page + 1})\n──────────────",
-        parse_mode="HTML",
-    )
+    await callback.message.answer(f"🔍 <b>{fl}</b> — {total} مطلب\n──────────────", parse_mode="HTML")
 
-    # Each item as separate message WITH translation buttons
     for item in items:
         msg_text = format_single_item_html(item)
         raw_text = item.raw_text or item.title or ""
@@ -492,53 +423,36 @@ async def _send_items_list(callback: CallbackQuery, fkey: str, page: int, filter
         btns.append([InlineKeyboardButton(text="📄 متن کامل", callback_data=f"p:full:{item.id}")])
 
         try:
-            await callback.message.answer(
-                msg_text,
-                parse_mode="HTML",
-                disable_web_page_preview=False,
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=btns),
-            )
+            await callback.message.answer(msg_text, parse_mode="HTML", disable_web_page_preview=False,
+                                          reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
         except Exception as e:
-            logger.error(f"Send item error: {e}")
-            try:
-                short = f"<b>{h(item.title[:80])}</b>\n⭐ {item.score}/10"
-                if item.url:
-                    short += f'\n🔗 <a href="{item.url}">لینک</a>'
-                await callback.message.answer(short, parse_mode="HTML")
-            except:
-                pass
+            logger.error(f"Send item: {e}")
 
-    # Pagination + Back buttons
-    base_cb = f"p:nl:{fkey}:"
     nav = []
+    base = f"p:nl:{fkey}:"
     if page > 0:
-        nav.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"{base_cb}{page - 1}"))
+        nav.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"{base}{page - 1}"))
     if len(items) == pp:
-        nav.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"{base_cb}{page + 1}"))
+        nav.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"{base}{page + 1}"))
     btns_back = []
     if nav:
         btns_back.append(nav)
-    btns_back.append([
-        InlineKeyboardButton(text="📥 دریافت اخبار", callback_data="p:news"),
-        InlineKeyboardButton(text="🤖 پنل", callback_data="p:main"),
-    ])
+    btns_back.append([InlineKeyboardButton(text="📥 دریافت اخبار", callback_data="p:news"), InlineKeyboardButton(text="🤖 پنل", callback_data="p:main")])
     await callback.message.answer("──────────────", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns_back))
 
 
 @router.callback_query(F.data.startswith("p:nl:"))
 async def cb_news_list(callback: CallbackQuery) -> None:
-    """p:nl:FILTER:PAGE"""
     if not callback.from_user or not await is_authorized(callback.from_user.id):
         return
     parts = callback.data.split(":")
     fkey = parts[2]
     page = int(parts[3])
-    await _send_items_list(callback, fkey, page, fkey)
+    await _send_items_with_buttons(callback, fkey, page)
 
 
 @router.callback_query(F.data.startswith("p:nsrc:"))
 async def cb_news_src_filter(callback: CallbackQuery) -> None:
-    """Show source list for filtering."""
     if not callback.from_user or not await is_authorized(callback.from_user.id):
         return
     page = int(callback.data.split(":")[2])
@@ -549,8 +463,7 @@ async def cb_news_src_filter(callback: CallbackQuery) -> None:
         tot = (await s.execute(select(sqlfunc.count(Source.id)))).scalar() or 0
     await safe_answer(callback)
     if not srcs:
-        await safe_edit(callback.message, "📡 منبعی نیست.",
-                        InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙", callback_data="p:news")]]))
+        await safe_edit(callback.message, "📡 منبعی نیست.", InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙", callback_data="p:news")]]))
         return
     btns = []
     for src in srcs:
@@ -568,34 +481,31 @@ async def cb_news_src_filter(callback: CallbackQuery) -> None:
     await safe_edit(callback.message, "📡 <b>منبع رو انتخاب کن:</b>", InlineKeyboardMarkup(inline_keyboard=btns))
 
 
-# ════════════════════════════════════════
+# ═══════════════════════════
 # TRANSLATION
-# ════════════════════════════════════════
+# ═══════════════════════════
 
 @router.callback_query(F.data.startswith("p:tr_fa:"))
 async def cb_translate_fa(callback: CallbackQuery) -> None:
     if not callback.from_user or not await is_authorized(callback.from_user.id):
         return
     item_id = int(callback.data.split(":")[2])
-    await safe_answer(callback, "⏳ ترجمه به فارسی... لطفاً صبر کن")
+    await safe_answer(callback, "⏳ ترجمه... لطفاً صبر کن (۱۰-۳۰ ثانیه)")
 
     async with async_session_factory() as s:
         result = await s.execute(select(ContentItem).where(ContentItem.id == item_id))
         item = result.scalar_one_or_none()
-
     if not item:
         await callback.message.answer("❌ مطلب یافت نشد.")
         return
-
     text = item.raw_text or item.title or ""
     if not text:
-        await callback.message.answer("❌ متنی برای ترجمه نیست.")
+        await callback.message.answer("❌ متنی نیست.")
         return
 
     from app.services.ai_service import ai_service
     translated = await ai_service.translate_to_farsi(text[:3000])
 
-    # Save
     async with async_session_factory() as s:
         result = await s.execute(select(ContentItem).where(ContentItem.id == item_id))
         db_item = result.scalar_one_or_none()
@@ -619,14 +529,12 @@ async def cb_translate_en(callback: CallbackQuery) -> None:
     async with async_session_factory() as s:
         result = await s.execute(select(ContentItem).where(ContentItem.id == item_id))
         item = result.scalar_one_or_none()
-
     if not item:
-        await callback.message.answer("❌ Item not found.")
+        await callback.message.answer("❌ Not found.")
         return
-
     text = item.raw_text or item.title or ""
     if not text:
-        await callback.message.answer("❌ No text to translate.")
+        await callback.message.answer("❌ No text.")
         return
 
     from app.services.ai_service import ai_service
@@ -643,35 +551,27 @@ async def cb_full_text(callback: CallbackQuery) -> None:
         return
     item_id = int(callback.data.split(":")[2])
     await safe_answer(callback)
-
     async with async_session_factory() as s:
         result = await s.execute(select(ContentItem).where(ContentItem.id == item_id))
         item = result.scalar_one_or_none()
-
     if not item:
         await callback.message.answer("❌ یافت نشد.")
         return
-
     full = item.raw_text or "متنی نیست."
     if len(full) > 3500:
-        full = full[:3500] + "\n\n[... ادامه ...]"
-
+        full = full[:3500] + "\n\n[...]"
     btns = []
     if is_persian(full):
         btns.append([InlineKeyboardButton(text="🇬🇧 ترجمه به انگلیسی", callback_data=f"p:tr_en:{item.id}")])
     else:
         btns.append([InlineKeyboardButton(text="🇮🇷 ترجمه به فارسی", callback_data=f"p:tr_fa:{item.id}")])
-
-    await callback.message.answer(
-        f"📄 <b>متن کامل:</b>\n\n{h(full)}",
-        parse_mode="HTML", disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=btns),
-    )
+    await callback.message.answer(f"📄 <b>متن کامل:</b>\n\n{h(full)}", parse_mode="HTML",
+                                  disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
 
 
-# ════════════════════════════════════════
+# ═══════════════════════════
 # KEYWORDS
-# ════════════════════════════════════════
+# ═══════════════════════════
 
 @router.callback_query(F.data == "p:kw")
 async def cb_kw(callback: CallbackQuery) -> None:
@@ -704,10 +604,7 @@ async def cb_kw(callback: CallbackQuery) -> None:
             btns.append([InlineKeyboardButton(text=f"🗑️ #{ht.tag}", callback_data=f"p:htrm:{ht.id}")])
     if not pos and not neg and not hts:
         lines.append("\n⚠️ هنوز چیزی ثبت نشده.")
-    btns.append([
-        InlineKeyboardButton(text="➕ کلمه مثبت", callback_data="wiz:kw_pos"),
-        InlineKeyboardButton(text="➖ کلمه منفی", callback_data="wiz:kw_neg"),
-    ])
+    btns.append([InlineKeyboardButton(text="➕ کلمه مثبت", callback_data="wiz:kw_pos"), InlineKeyboardButton(text="➖ کلمه منفی", callback_data="wiz:kw_neg")])
     btns.append([InlineKeyboardButton(text="➕ هشتگ", callback_data="wiz:ht_add")])
     btns.append([InlineKeyboardButton(text="🔙", callback_data="p:main")])
     await safe_answer(callback)
@@ -752,9 +649,9 @@ async def cb_htrm(callback: CallbackQuery) -> None:
     await cb_kw(callback)
 
 
-# ════════════════════════════════════════
+# ═══════════════════════════
 # CATEGORIES
-# ════════════════════════════════════════
+# ═══════════════════════════
 
 CATS = {
     "tutorial": "📚 آموزشی", "news": "📰 خبر", "tool": "🔧 ابزار",
@@ -801,9 +698,9 @@ async def cb_cat_toggle(callback: CallbackQuery) -> None:
     await cb_cats(callback)
 
 
-# ════════════════════════════════════════
+# ═══════════════════════════
 # RECEIVERS
-# ════════════════════════════════════════
+# ═══════════════════════════
 
 @router.callback_query(F.data == "p:rcv")
 async def cb_rcv(callback: CallbackQuery) -> None:
@@ -815,7 +712,7 @@ async def cb_rcv(callback: CallbackQuery) -> None:
             rids = json.loads(rv) if rv else []
         except:
             rids = []
-    lines = ["📬 <b>دریافت‌کنندگان</b>\n", "💡 Chat ID‌هایی که خلاصه براشون ارسال میشه.", "به @userinfobot پیام بده تا Chat ID رو ببینی.\n"]
+    lines = ["📬 <b>دریافت‌کنندگان</b>\n", "به @userinfobot پیام بده تا Chat ID رو ببینی.\n"]
     if rids:
         lines.append("📋 فعلی:")
         for r in rids:
@@ -871,9 +768,9 @@ async def cb_rc_rm_all(callback: CallbackQuery) -> None:
     await cb_rcv(callback)
 
 
-# ════════════════════════════════════════
+# ═══════════════════════════
 # SCHEDULE
-# ════════════════════════════════════════
+# ═══════════════════════════
 
 @router.callback_query(F.data == "p:sched")
 async def cb_sched(callback: CallbackQuery) -> None:
@@ -883,13 +780,7 @@ async def cb_sched(callback: CallbackQuery) -> None:
     m = await _setting("digest_minute", str(settings.digest_minute))
     mx = await _setting("digest_max_items", str(settings.digest_max_items))
     ms = await _setting("min_score", "0")
-    txt = (
-        f"⏰ <b>زمان‌بندی</b>\n\n"
-        f"💡 هر ۲ ساعت جمع‌آوری، ساعت {h}:{int(m):02d} ارسال خلاصه.\n\n"
-        f"🕐 ساعت: <b>{h}:{int(m):02d}</b>\n"
-        f"📊 حداکثر: <b>{mx}</b>\n"
-        f"⭐ حداقل امتیاز: <b>{ms}</b>"
-    )
+    txt = f"⏰ <b>زمان‌بندی</b>\n\n🕐 ساعت: <b>{h}:{int(m):02d}</b>\n📊 حداکثر: <b>{mx}</b>\n⭐ حداقل امتیاز: <b>{ms}</b>"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🕐 تغییر ساعت", callback_data="wiz:time")],
         [InlineKeyboardButton(text="📊 تغییر تعداد", callback_data="wiz:count")],
@@ -900,9 +791,9 @@ async def cb_sched(callback: CallbackQuery) -> None:
     await safe_edit(callback.message, txt, kb)
 
 
-# ════════════════════════════════════════
+# ═══════════════════════════
 # ADMINS
-# ════════════════════════════════════════
+# ═══════════════════════════
 
 @router.callback_query(F.data == "p:admins")
 async def cb_admins(callback: CallbackQuery) -> None:
@@ -944,9 +835,9 @@ async def cb_adm_rm(callback: CallbackQuery) -> None:
     await cb_admins(callback)
 
 
-# ════════════════════════════════════════
+# ═══════════════════════════
 # SYSTEM
-# ════════════════════════════════════════
+# ═══════════════════════════
 
 @router.callback_query(F.data == "p:sys")
 async def cb_sys(callback: CallbackQuery) -> None:
