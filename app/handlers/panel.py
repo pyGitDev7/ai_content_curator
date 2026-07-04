@@ -265,39 +265,72 @@ async def cb_crawl_all(callback: CallbackQuery) -> None:
     await callback.message.answer("🚀 کراول شروع شد. ۲-۱۰ دقیقه طول می‌کشه.")
 
 
-# ════════════════════════════════════════════════════
-# NEWS - با فیلتر زمانی و منبع
-# ════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════
+# NEWS - کامل بازنویسی شده
+# ════════════════════════════════════════════════════════════
 
 @router.callback_query(F.data == "p:news")
 async def cb_news(callback: CallbackQuery) -> None:
     if not callback.from_user or not await is_authorized(callback.from_user.id):
         return
+
     async with async_session_factory() as s:
         rv = (await s.execute(select(Setting.value).where(Setting.key == "receiver_ids"))).scalar_one_or_none()
         try:
             rids = json.loads(rv) if rv else []
         except:
             rids = []
+
+        total = (await s.execute(select(sqlfunc.count(ContentItem.id)).where(ContentItem.processed == True))).scalar() or 0
         undel = (await s.execute(select(sqlfunc.count(ContentItem.id)).where(
             ContentItem.processed == True, ContentItem.delivered == False))).scalar() or 0
-        total = (await s.execute(select(sqlfunc.count(ContentItem.id)).where(ContentItem.processed == True))).scalar() or 0
+
+        # Count per time period
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        yesterday_start = today_start - timedelta(days=1)
+        week_start = today_start - timedelta(days=7)
+
+        today_count = (await s.execute(
+            select(sqlfunc.count(ContentItem.id)).where(
+                ContentItem.processed == True, ContentItem.created_at >= today_start)
+        )).scalar() or 0
+        yesterday_count = (await s.execute(
+            select(sqlfunc.count(ContentItem.id)).where(
+                ContentItem.processed == True,
+                ContentItem.created_at >= yesterday_start,
+                ContentItem.created_at < today_start)
+        )).scalar() or 0
+        week_count = (await s.execute(
+            select(sqlfunc.count(ContentItem.id)).where(
+                ContentItem.processed == True, ContentItem.created_at >= week_start)
+        )).scalar() or 0
 
     txt = (
-        f"📥 <b>دریافت اخبار</b>\n\n"
-        f"📬 دریافت‌کنندگان: <b>{len(rids)}</b>\n"
-        f"📋 مطالب آماده ارسال: <b>{undel}</b>\n"
-        f"📚 کل مطالب: <b>{total}</b>"
+        f"📥 <b>دریافت و مشاهده اخبار</b>\n\n"
+        f"📊 <b>آمار:</b>\n"
+        f"  📅 امروز: <b>{today_count}</b> مطلب\n"
+        f"  📅 دیروز: <b>{yesterday_count}</b> مطلب\n"
+        f"  📅 این هفته: <b>{week_count}</b> مطلب\n"
+        f"  📚 کل: <b>{total}</b> مطلب\n"
+        f"  📤 آماده ارسال: <b>{undel}</b>\n"
+        f"  📬 دریافت‌کنندگان: <b>{len(rids)}</b>"
     )
+
     if not rids:
-        txt += "\n\n⚠️ <b>دریافت‌کننده تنظیم نشده!</b>\nاز بخش 📬 اضافه کن."
+        txt += "\n\n⚠️ <b>دریافت‌کننده تنظیم نشده!</b>"
     if not total:
-        txt += "\n\n💡 مطلبی جمع‌آوری نشده. دکمه جمع‌آوری رو بزن."
+        txt += "\n\n💡 <b>هنوز مطلبی جمع‌آوری نشده.</b>\nاول «🔄 جمع‌آوری الان» رو بزن."
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 جمع‌آوری الان", callback_data="p:fetch_now")],
         [InlineKeyboardButton(text="📤 ارسال خلاصه الان", callback_data="p:send_now")],
-        [InlineKeyboardButton(text="🔍 مشاهده مطالب (با فیلتر)", callback_data="p:nfilter")],
+        [InlineKeyboardButton(text="─────────────", callback_data="p:none")],
+        [InlineKeyboardButton(text=f"📅 امروز ({today_count})", callback_data="p:nl:t:0")],
+        [InlineKeyboardButton(text=f"📅 دیروز ({yesterday_count})", callback_data="p:nl:y:0")],
+        [InlineKeyboardButton(text=f"📅 این هفته ({week_count})", callback_data="p:nl:w:0")],
+        [InlineKeyboardButton(text=f"📋 همه مطالب ({total})", callback_data="p:nl:a:0")],
+        [InlineKeyboardButton(text="📡 فقط یه منبع خاص", callback_data="p:nsrc:0")],
         [InlineKeyboardButton(text="🔙", callback_data="p:main")],
     ])
     await safe_answer(callback)
@@ -309,13 +342,30 @@ async def cb_fetch_now(callback: CallbackQuery) -> None:
     if not callback.from_user or not await is_authorized(callback.from_user.id):
         return
     await safe_answer(callback, "⏳ ...")
+
+    # Show how many active sources
+    async with async_session_factory() as s:
+        active = (await s.execute(select(sqlfunc.count(Source.id)).where(Source.is_active == True))).scalar() or 0
+
+    if not active:
+        await callback.message.answer(
+            "❌ <b>هیچ منبع فعالی نداری!</b>\n\n"
+            "از منوی اصلی > 📡 مدیریت منابع > لیست منابع\n"
+            "منابع رو فعال کن یا منبع جدید اضافه کن.",
+            parse_mode="HTML",
+        )
+        return
+
     from app.services.scheduler import _run_collectors
     asyncio.create_task(_run_collectors())
     await callback.message.answer(
-        "🔄 <b>جمع‌آوری شروع شد!</b>\n\n"
-        "⏳ بسته به تعداد منابع، ۲ تا ۱۰ دقیقه طول می‌کشه.\n"
-        "بعد از اتمام از «🔍 مشاهده مطالب» ببین.\n\n"
-        "💡 اگه تازه ربات رو راه‌اندازی کردی، اول مطمئن شو منابع فعال داری (📡 مدیریت منابع).",
+        f"🔄 <b>جمع‌آوری شروع شد!</b>\n\n"
+        f"📡 {active} منبع فعال در حال بررسی...\n"
+        f"⏳ ۲ تا ۱۰ دقیقه طول می‌کشه.\n\n"
+        f"بعد از اتمام:\n"
+        f"• از دکمه‌های زیر مطالب رو ببین\n"
+        f"• هر مطلب دکمه ترجمه داره\n\n"
+        f"💡 صبر کن تا جمع‌آوری تموم بشه، بعد بیا مطالب رو ببین.",
         parse_mode="HTML",
     )
 
@@ -326,7 +376,6 @@ async def cb_send_now(callback: CallbackQuery) -> None:
         return
     await safe_answer(callback, "⏳ ...")
 
-    # Pre-checks
     async with async_session_factory() as s:
         rv = (await s.execute(select(Setting.value).where(Setting.key == "receiver_ids"))).scalar_one_or_none()
         try:
@@ -349,44 +398,23 @@ async def cb_send_now(callback: CallbackQuery) -> None:
 
     if not undel:
         await callback.message.answer(
-            "📭 <b>مطلبی برای ارسال نیست!</b>\n\n"
-            "یا قبلاً ارسال شدن یا هنوز جمع‌آوری نشدن.\n"
-            "از «🔄 جمع‌آوری الان» استفاده کن.",
+            "📭 <b>مطلب جدیدی برای ارسال نیست!</b>\n\n"
+            "• قبلاً همه مطالب ارسال شدن\n"
+            "• یا هنوز مطلبی جمع‌آوری نشده\n\n"
+            "💡 اول «🔄 جمع‌آوری الان» رو بزن، بعد امتحان کن.",
             parse_mode="HTML",
         )
         return
 
     from app.services.delivery import deliver_digest
     await deliver_digest(callback.bot)
-    await callback.message.answer(f"📤 خلاصه {undel} مطلب به {len(rids)} دریافت‌کننده ارسال شد.")
+    await callback.message.answer(f"📤 <b>خلاصه {undel} مطلب به {len(rids)} نفر ارسال شد.</b>", parse_mode="HTML")
 
 
-# ── فیلتر مطالب ──
+# ── فیلتر و نمایش مطالب ──
 
-@router.callback_query(F.data == "p:nfilter")
-async def cb_news_filter(callback: CallbackQuery) -> None:
-    if not callback.from_user or not await is_authorized(callback.from_user.id):
-        return
-    btns = [
-        [InlineKeyboardButton(text="📅 امروز", callback_data="p:nl:t:0"),
-         InlineKeyboardButton(text="📅 دیروز", callback_data="p:nl:y:0")],
-        [InlineKeyboardButton(text="📅 این هفته", callback_data="p:nl:w:0"),
-         InlineKeyboardButton(text="📋 همه مطالب", callback_data="p:nl:a:0")],
-        [InlineKeyboardButton(text="📡 فیلتر بر اساس منبع", callback_data="p:nsrc:0")],
-        [InlineKeyboardButton(text="🔙", callback_data="p:news")],
-    ]
-    await safe_answer(callback)
-    await safe_edit(callback.message, "🔍 <b>فیلتر مطالب</b>\n\nبازه زمانی یا منبع رو انتخاب کن:", InlineKeyboardMarkup(inline_keyboard=btns))
-
-
-@router.callback_query(F.data.startswith("p:nl:"))
-async def cb_news_list(callback: CallbackQuery) -> None:
-    """Show filtered content list: p:nl:FILTER:PAGE"""
-    if not callback.from_user or not await is_authorized(callback.from_user.id):
-        return
-    parts = callback.data.split(":")
-    fkey = parts[2]
-    page = int(parts[3])
+async def _send_items_list(callback: CallbackQuery, fkey: str, page: int, filter_label: str) -> None:
+    """Common function to show filtered items list with translation buttons."""
     pp = 5
     off = page * pp
 
@@ -411,14 +439,14 @@ async def cb_news_list(callback: CallbackQuery) -> None:
             query = query.where(ContentItem.created_at >= ws)
             count_q = count_q.where(ContentItem.created_at >= ws)
             fl = "📅 این هفته"
-        elif fkey.startswith("s"):
+        elif fkey.startswith("s_"):
             sid = int(fkey.split("_")[1])
             query = query.where(ContentItem.source_id == sid)
             count_q = count_q.where(ContentItem.source_id == sid)
             sr = await s.execute(select(Source.name).where(Source.id == sid))
             fl = f"📡 {sr.scalar_one_or_none() or 'نامشخص'}"
         else:
-            fl = "📋 همه"
+            fl = "📋 همه مطالب"
 
         total = (await s.execute(count_q)).scalar() or 0
         items = (await s.execute(
@@ -428,20 +456,29 @@ async def cb_news_list(callback: CallbackQuery) -> None:
     await safe_answer(callback)
 
     if not items:
-        await safe_edit(
-            callback.message,
-            f"🔍 <b>{fl}</b>\n\nمطلبی نیست.\n\n💡 اول «🔄 جمع‌آوری الان» رو بزن.",
-            InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔍 فیلتر دیگه", callback_data="p:nfilter")],
+        await callback.message.answer(
+            f"🔍 <b>{fl}</b>\n\n"
+            f"مطلبی یافت نشد.\n\n"
+            f"💡 اگه تازه ربات رو راه‌اندازی کردی:\n"
+            f"1. برو به «📥 دریافت اخبار»\n"
+            f"2. «🔄 جمع‌آوری الان» رو بزن\n"
+            f"3. ۵ دقیقه صبر کن\n"
+            f"4. دوباره بیا اینجا",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 جمع‌آوری الان", callback_data="p:fetch_now")],
                 [InlineKeyboardButton(text="🔙", callback_data="p:news")],
             ]),
         )
         return
 
-    # Send header
-    await callback.message.answer(f"🔍 <b>{fl}</b> — {total} مطلب:\n──────────────", parse_mode="HTML")
+    # Header
+    await callback.message.answer(
+        f"🔍 <b>{fl}</b> — {total} مطلب (صفحه {page + 1})\n──────────────",
+        parse_mode="HTML",
+    )
 
-    # Send each item separately with translation buttons
+    # Each item as separate message WITH translation buttons
     for item in items:
         msg_text = format_single_item_html(item)
         raw_text = item.raw_text or item.title or ""
@@ -456,7 +493,9 @@ async def cb_news_list(callback: CallbackQuery) -> None:
 
         try:
             await callback.message.answer(
-                msg_text, parse_mode="HTML", disable_web_page_preview=False,
+                msg_text,
+                parse_mode="HTML",
+                disable_web_page_preview=False,
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=btns),
             )
         except Exception as e:
@@ -464,32 +503,42 @@ async def cb_news_list(callback: CallbackQuery) -> None:
             try:
                 short = f"<b>{h(item.title[:80])}</b>\n⭐ {item.score}/10"
                 if item.url:
-                    short += f'\n🔗 {item.url}'
+                    short += f'\n🔗 <a href="{item.url}">لینک</a>'
                 await callback.message.answer(short, parse_mode="HTML")
             except:
                 pass
 
-    # Pagination
+    # Pagination + Back buttons
+    base_cb = f"p:nl:{fkey}:"
     nav = []
-    base_cb = f":{fkey}:"
     if page > 0:
-        nav.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"p:nl{base_cb}{page - 1}"))
+        nav.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"{base_cb}{page - 1}"))
     if len(items) == pp:
-        nav.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"p:nl{base_cb}{page + 1}"))
+        nav.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"{base_cb}{page + 1}"))
     btns_back = []
     if nav:
         btns_back.append(nav)
     btns_back.append([
-        InlineKeyboardButton(text="🔍 فیلتر", callback_data="p:nfilter"),
-        InlineKeyboardButton(text="🔙", callback_data="p:news"),
+        InlineKeyboardButton(text="📥 دریافت اخبار", callback_data="p:news"),
+        InlineKeyboardButton(text="🤖 پنل", callback_data="p:main"),
     ])
     await callback.message.answer("──────────────", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns_back))
 
 
-# ── فیلتر بر اساس منبع ──
+@router.callback_query(F.data.startswith("p:nl:"))
+async def cb_news_list(callback: CallbackQuery) -> None:
+    """p:nl:FILTER:PAGE"""
+    if not callback.from_user or not await is_authorized(callback.from_user.id):
+        return
+    parts = callback.data.split(":")
+    fkey = parts[2]
+    page = int(parts[3])
+    await _send_items_list(callback, fkey, page, fkey)
+
 
 @router.callback_query(F.data.startswith("p:nsrc:"))
 async def cb_news_src_filter(callback: CallbackQuery) -> None:
+    """Show source list for filtering."""
     if not callback.from_user or not await is_authorized(callback.from_user.id):
         return
     page = int(callback.data.split(":")[2])
@@ -501,12 +550,13 @@ async def cb_news_src_filter(callback: CallbackQuery) -> None:
     await safe_answer(callback)
     if not srcs:
         await safe_edit(callback.message, "📡 منبعی نیست.",
-                        InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙", callback_data="p:nfilter")]]))
+                        InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙", callback_data="p:news")]]))
         return
     btns = []
     for src in srcs:
         em = SRC_EMOJI.get(src.type, "📁")
-        btns.append([InlineKeyboardButton(text=f"{em} {src.name}", callback_data=f"p:nl:s_{src.id}:0")])
+        st = "🟢" if src.is_active else "🔴"
+        btns.append([InlineKeyboardButton(text=f"{st} {em} {src.name}", callback_data=f"p:nl:s_{src.id}:0")])
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton(text="◀️", callback_data=f"p:nsrc:{page - 1}"))
@@ -514,8 +564,8 @@ async def cb_news_src_filter(callback: CallbackQuery) -> None:
         nav.append(InlineKeyboardButton(text="▶️", callback_data=f"p:nsrc:{page + 1}"))
     if nav:
         btns.append(nav)
-    btns.append([InlineKeyboardButton(text="🔙", callback_data="p:nfilter")])
-    await safe_edit(callback.message, "📡 <b>انتخاب منبع:</b>", InlineKeyboardMarkup(inline_keyboard=btns))
+    btns.append([InlineKeyboardButton(text="🔙", callback_data="p:news")])
+    await safe_edit(callback.message, "📡 <b>منبع رو انتخاب کن:</b>", InlineKeyboardMarkup(inline_keyboard=btns))
 
 
 # ════════════════════════════════════════
@@ -527,7 +577,7 @@ async def cb_translate_fa(callback: CallbackQuery) -> None:
     if not callback.from_user or not await is_authorized(callback.from_user.id):
         return
     item_id = int(callback.data.split(":")[2])
-    await safe_answer(callback, "⏳ در حال ترجمه به فارسی...")
+    await safe_answer(callback, "⏳ ترجمه به فارسی... لطفاً صبر کن")
 
     async with async_session_factory() as s:
         result = await s.execute(select(ContentItem).where(ContentItem.id == item_id))
@@ -545,6 +595,7 @@ async def cb_translate_fa(callback: CallbackQuery) -> None:
     from app.services.ai_service import ai_service
     translated = await ai_service.translate_to_farsi(text[:3000])
 
+    # Save
     async with async_session_factory() as s:
         result = await s.execute(select(ContentItem).where(ContentItem.id == item_id))
         db_item = result.scalar_one_or_none()
