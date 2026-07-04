@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from pydantic_settings import BaseSettings
+from pydantic import Field
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -9,7 +10,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 class Settings(BaseSettings):
     bot_token: str = ""
     super_admin_id: int = 0
-
     database_url: str = f"sqlite+aiosqlite:///{BASE_DIR / 'data' / 'curator.db'}"
 
     openai_api_key: str = ""
@@ -34,9 +34,7 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
-    class Config:
-        env_file = str(BASE_DIR / ".env")
-        env_file_encoding = "utf-8"
+    model_config = {"env_file": str(BASE_DIR / ".env"), "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()
