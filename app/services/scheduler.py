@@ -11,7 +11,7 @@ from loguru import logger
 from sqlalchemy import select, update
 
 from app.database import async_session_factory
-from app.models.models import Source
+from app.models.models import Source, Setting
 from app.collectors import COLLECTOR_MAP
 from app.processors.pipeline import process_single_item
 from app.config import settings
@@ -19,7 +19,26 @@ from app.config import settings
 scheduler = AsyncIOScheduler(timezone="UTC")
 
 
-async def _collect_one_source(source) -> int:
+async def _get_next_batch() -> int:
+    async with async_session_factory() as s:
+        r = await s.execute(select(Setting.value).where(Setting.key == "current_batch"))
+        st = r.scalar_one_or_none()
+        try:
+            cur = int(st) if st else 0
+        except:
+            cur = 0
+        nxt = cur + 1
+        r2 = await s.execute(select(Setting).where(Setting.key == "current_batch"))
+        row = r2.scalar_one_or_none()
+        if row:
+            row.value = str(nxt)
+        else:
+            s.add(Setting(key="current_batch", value=str(nxt)))
+        await s.commit()
+        return nxt
+
+
+async def _collect_one_source(source, batch: int) -> int:
     try:
         collector_cls = COLLECTOR_MAP.get(source.type)
         if not collector_cls:
@@ -27,7 +46,6 @@ async def _collect_one_source(source) -> int:
         config = json.loads(source.config_json) if source.config_json else {}
         collector = collector_cls(config)
         raw_items = await collector.safe_collect()
-
         new_count = 0
         for raw in raw_items:
             try:
@@ -35,7 +53,8 @@ async def _collect_one_source(source) -> int:
                     item = await process_single_item(
                         session=session, source=source,
                         title=raw.title, raw_text=raw.text,
-                        url=raw.url, html=raw.html, published_at=raw.published_at,
+                        url=raw.url, html=raw.html,
+                        published_at=raw.published_at, batch=batch,
                     )
                     if item:
                         new_count += 1
@@ -47,15 +66,13 @@ async def _collect_one_source(source) -> int:
                                 await deliver_urgent(bot, item)
                     await session.commit()
             except Exception as e:
-                logger.error(f"Process item [{source.name}]: {e}")
-
+                logger.error(f"Process [{source.name}]: {e}")
         async with async_session_factory() as session:
             await session.execute(
                 update(Source).where(Source.id == source.id).values(last_fetch_at=datetime.now(timezone.utc))
             )
             await session.commit()
-
-        logger.info(f"[{source.name}]: {new_count} new / {len(raw_items)} fetched")
+        logger.info(f"[{source.name}] batch#{batch}: {new_count} new / {len(raw_items)} fetched")
         return new_count
     except Exception as e:
         logger.error(f"Source [{source.name}] error: {e}")
@@ -68,23 +85,23 @@ async def _run_collectors() -> None:
         async with async_session_factory() as session:
             result = await session.execute(select(Source).where(Source.is_active == True))
             sources = result.scalars().all()
-
         if not sources:
             logger.warning("No active sources!")
             return
 
-        sem = asyncio.Semaphore(5)
+        batch = await _get_next_batch()
+        logger.info(f"Collection batch #{batch}")
 
+        sem = asyncio.Semaphore(5)
         async def limited(src):
             async with sem:
-                return await _collect_one_source(src)
+                return await _collect_one_source(src, batch)
 
         tasks = [limited(s) for s in sources]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-
         total = sum(r for r in results if isinstance(r, int))
         errs = sum(1 for r in results if isinstance(r, Exception))
-        logger.info(f"═══ Done: {total} new, {errs} errors ═══")
+        logger.info(f"═══ Batch #{batch} done: {total} new, {errs} errors ═══")
     except Exception as e:
         logger.error(f"Collection fatal: {e}")
 
@@ -104,20 +121,8 @@ async def _run_digest() -> None:
 
 
 def setup_scheduler() -> None:
-    scheduler.add_job(
-        _run_collectors,
-        trigger=IntervalTrigger(hours=2),
-        id="collect_cycle",
-        replace_existing=True,
-        max_instances=1,
-    )
-    scheduler.add_job(
-        _run_digest,
-        trigger=CronTrigger(hour=settings.digest_hour, minute=settings.digest_minute),
-        id="daily_digest",
-        replace_existing=True,
-        max_instances=1,
-    )
+    scheduler.add_job(_run_collectors, trigger=IntervalTrigger(hours=2), id="collect_cycle", replace_existing=True, max_instances=1)
+    scheduler.add_job(_run_digest, trigger=CronTrigger(hour=settings.digest_hour, minute=settings.digest_minute), id="daily_digest", replace_existing=True, max_instances=1)
     scheduler.start()
     logger.info(f"Scheduler: collect every 2h, digest at {settings.digest_hour:02d}:{settings.digest_minute:02d}")
 
