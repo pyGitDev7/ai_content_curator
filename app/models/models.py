@@ -64,11 +64,12 @@ class ContentItem(Base):
     category: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     score: Mapped[float] = mapped_column(Float, default=0.0)
     tags_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    collection_batch: Mapped[int] = mapped_column(Integer, default=0, index=True)
     published_at: Mapped[Optional[_dt.datetime]] = mapped_column(DateTime, nullable=True)
     processed: Mapped[bool] = mapped_column(Boolean, default=False)
     delivered: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[_dt.datetime] = mapped_column(DateTime, server_default=func.now())
-    source: Mapped["Source"] = relationship("Source", back_populates="content_items")
+    source: Mapped["Source"] = relationship("Source", back_populates="content_items", lazy="selectin")
     delivery_logs: Mapped[list["DeliveredLog"]] = relationship("DeliveredLog", back_populates="content_item", lazy="selectin")
 
 
@@ -95,3 +96,12 @@ class AdminLog(Base):
     action_type: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     timestamp: Mapped[_dt.datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class Bookmark(Base):
+    __tablename__ = "bookmarks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    content_id: Mapped[int] = mapped_column(Integer, ForeignKey("content_items.id", ondelete="CASCADE"), nullable=False, index=True)
+    chat_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    created_at: Mapped[_dt.datetime] = mapped_column(DateTime, server_default=func.now())
+    content_item: Mapped["ContentItem"] = relationship("ContentItem", lazy="selectin")
