@@ -46,12 +46,16 @@ async def main() -> None:
     _bot_instance = bot
     dp = Dispatcher(storage=MemoryStorage())
 
+    # Import routers
     from app.handlers.wizard import router as r_wizard
+    from app.handlers.news import router as r_news
     from app.handlers.panel import router as r_panel
     from app.handlers.commands import router as r_commands
     from app.handlers.start import router as r_start
 
+    # ORDER: wizard (FSM) > news > panel > commands > start
     dp.include_router(r_wizard)
+    dp.include_router(r_news)
     dp.include_router(r_panel)
     dp.include_router(r_commands)
     dp.include_router(r_start)
