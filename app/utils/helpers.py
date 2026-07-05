@@ -35,10 +35,16 @@ def format_single_item_html(item) -> str:
     cat_label = cat_labels.get(item.category or "other", "📌")
     stars = "⭐" * max(1, int(item.score // 2))
 
+    source_name = ""
+    if hasattr(item, 'source') and item.source:
+        source_name = item.source.name
+
+    batch_info = f" | 📦#{item.collection_batch}" if hasattr(item, 'collection_batch') and item.collection_batch else ""
+
     lines = [
         f"{emoji} <b>{h(item.title)}</b>",
         "",
-        f"📁 {cat_label} | {stars} ({item.score}/10)",
+        f"📁 {cat_label} | 📡 {source_name} | {stars} ({item.score}/10){batch_info}",
         "",
     ]
 
@@ -86,10 +92,7 @@ def format_content_html(title, summary, url, category, score, hashtags) -> str:
 
 
 def format_digest_html(items, title="خلاصه روزانه") -> str:
-    cat_emoji = {
-        "tutorial": "📚", "news": "📰", "tool": "🔧",
-        "prompt": "💬", "paper": "📄", "other": "📌",
-    }
+    cat_emoji = {"tutorial": "📚", "news": "📰", "tool": "🔧", "prompt": "💬", "paper": "📄", "other": "📌"}
     lines = [f"📋 <b>{h(title)}</b>", f"📅 {_dt.datetime.now().strftime('%Y-%m-%d')}", "─" * 20, ""]
     for i, item in enumerate(items, 1):
         emoji = cat_emoji.get(item.get("category", "other"), "📌")
@@ -98,5 +101,5 @@ def format_digest_html(items, title="خلاصه روزانه") -> str:
             lines.append(f"  {h(item['summary'][:200])}")
         if item.get("url"):
             lines.append(f'  🔗 <a href="{item["url"]}">لینک</a>')
-        lines.append(f"  ⭐ {item.get("score", 0)}/10\n")
+        lines.append(f"  ⭐ {item.get('score', 0)}/10\n")
     return "\n".join(lines)
